@@ -29,6 +29,12 @@ UrbanTrace lets you visually construct data pipelines on an infinite canvas — 
 - Draggable onto the canvas
 - Config-driven — easy to extend with new modules
 
+### ⚙️ Operation Node (Interactive Analytical Engine)
+- **Fluid Resizing:** Drag to resize the node; the Deck.GL map inside recalculates its dimensions instantly via WebGL sync
+- **Live H3 Spatial Processing:** Executes real set operations (Union, Intersection) on the backend by converting geometries into standardized H3 hexagon indexes
+- **Interactive 2D/3D Canvas:** Powered by a custom `H3PreviewDeckGL` component — toggle between a flat 2D density view and a 3D extruded view inside the node
+- **Contextual Density Legends:** In 2D mode, dynamically calculates dataset overlap counts and renders a compact color-scale legend inside the viewport
+- **Polished Execution States:** Frosted-glass "Processing..." overlay activates during backend computation
 ---
 
 ## 🏗️ Tech Stack
@@ -36,7 +42,8 @@ UrbanTrace lets you visually construct data pipelines on an infinite canvas — 
 | Layer | Technology |
 |---|---|
 | Frontend | React, Vite, React Flow, Lucide React, Axios |
-| Visualization | Deck.GL (WebGL vector rendering) |
+| Visualization | Deck.GL (WebGL vector rendering), H3-js |
+| Spatial Engine | H3 (Uber's Hexagonal Hierarchical Spatial Index) |
 | Backend | Python, FastAPI |
 | Data Format | GeoJSON |
 
@@ -95,10 +102,13 @@ App runs at **http://localhost:5173**
 - [x] Attribute-based choropleth styling
 
 ### Phase 2 — Transformation Engine 🚧
-- [ ] Rasterize vector data into grids/numpy arrays
-- [ ] Enable Operation Node execution via backend
-- [ ] Raster result preview inside nodes
+- [x] H3 hexagon-based spatial operations (Union, Intersection) via backend
+- [x] Interactive Operation Node with live backend execution
+- [x] 2D/3D toggle with H3 density preview inside nodes
+- [x] Dynamic color-scale legend for overlap density
+- [ ] Raster engine for grid/numpy-based processing
 - [ ] Map algebra (Layer A + Layer B)
+- [ ] Export results as GeoJSON or GeoTIFF
 
 ### Phase 3 — Advanced Features
 - [ ] H3 Hexagon grid support
