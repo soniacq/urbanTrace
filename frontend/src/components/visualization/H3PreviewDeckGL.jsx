@@ -1,20 +1,34 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { Layers } from 'lucide-react'; 
 
-const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {
-  // 👇 1. Set default to false (2D)
-  const [is3D, setIs3D] = useState(false);
-
-  // 👇 2. Set default pitch to 0 (top-down view)
-  const [viewState, setViewState] = useState({
-    longitude: -74.0,
-    latitude: 40.7,
-    zoom: 10,
-    pitch: 0, 
-    bearing: 0
-  });
+const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {  
+  // 👇 1. Add a ref to track the container and a state for readiness
+    const containerRef = useRef(null);
+    const [isReady, setIsReady] = useState(false);
+    
+    const [is3D, setIs3D] = useState(false);
+    const [viewState, setViewState] = useState({
+      longitude: -74.0,
+      latitude: 40.7,
+      zoom: 10,
+      pitch: 0, 
+      bearing: 0
+    });
+  
+    // 👇 2. THE SHIELD: Wait until React Flow gives this container actual dimensions (> 0)
+    useEffect(() => {
+      if (!containerRef.current) return;
+      const observer = new ResizeObserver(entries => {
+        const { width, height } = entries[0].contentRect;
+        if (width > 0 && height > 0) {
+          setIsReady(true);
+        }
+      });
+      observer.observe(containerRef.current);
+      return () => observer.disconnect();
+    }, []);
 
   const handleToggleMode = () => {
     const nextIs3D = !is3D;
@@ -28,8 +42,10 @@ const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {
   };
 
   const { data, maxCount } = useMemo(() => {
-    if (!hexData) return { data: [], maxCount: 1 };
-    
+    if (!hexData) {
+      console.log("Warning: No hexData provided to H3PreviewDeckGL. DeckGL will render an empty map.");
+      return { data: [], maxCount: 1 };
+    }
     let max = 1;
     const parsedData = Object.entries(hexData).map(([hexId, info]) => {
       if (info.count > max) max = info.count; 
@@ -64,37 +80,39 @@ const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {
   ];
 
   return (
-    <div className="nodrag nowheel" style={{ position: 'relative', width: '100%', height: '100%', borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>
-      <DeckGL
-        viewState={viewState}
-        onViewStateChange={({ viewState }) => setViewState(viewState)}
-        controller={true}
-        layers={layers}
-        getTooltip={({ object }) => {
-          if (!object) return null;
-          return {
-            html: `
-              <div style="font-family: sans-serif;">
-                <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
-                  Hex ID: ${object.hex.slice(0, 8)}...
+      <div ref={containerRef} className="nodrag nowheel" style={{ position: 'relative', width: '100%', height: '100%', borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>       {/* 👇 4. Wrap DeckGL so it physically cannot render while dimensions are 0x0 */}
+       {isReady && (
+        <DeckGL
+          viewState={viewState}
+          onViewStateChange={({ viewState }) => setViewState(viewState)}
+          controller={true}
+          layers={layers}
+          getTooltip={({ object }) => {
+            if (!object) return null;
+            return {
+              html: `
+                <div style="font-family: sans-serif;">
+                  <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
+                    Hex ID: ${object.hex.slice(0, 8)}...
+                  </div>
+                  <div><strong>Overlaps:</strong> ${object.count}</div>
+                  ${object.sources?.length ? `<div style="margin-top: 4px;"><strong>Sources:</strong> ${object.sources.join(', ')}</div>` : ''}
                 </div>
-                <div><strong>Overlaps:</strong> ${object.count}</div>
-                ${object.sources?.length ? `<div style="margin-top: 4px;"><strong>Sources:</strong> ${object.sources.join(', ')}</div>` : ''}
-              </div>
-            `,
-            style: {
-              backgroundColor: '#1e293b',
-              color: '#f8fafc',
-              fontSize: '11px',
-              padding: '8px',
-              borderRadius: '6px',
-              boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
-              maxWidth: '220px',
-              border: '1px solid #334155'
-            }
-          };
-        }}
-      />
+              `,
+              style: {
+                backgroundColor: '#1e293b',
+                color: '#f8fafc',
+                fontSize: '11px',
+                padding: '8px',
+                borderRadius: '6px',
+                boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                maxWidth: '220px',
+                border: '1px solid #334155'
+              }
+            };
+          }}
+        />
+       )}
       
       {/* 👇 NEW: Minimized 2D Density Legend */}
       {!is3D && maxCount > 1 && (

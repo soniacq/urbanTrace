@@ -1,13 +1,21 @@
+// frontend/src/components/sidebar/OperationsSidebar.jsx
 import React from 'react';
-import { OPERATION_CATEGORIES } from '../../config/operations'; // Up 2 levels
+import { OPERATION_CATEGORIES } from '../../config/operations'; 
 import { GripVertical } from 'lucide-react';
 
 const OperationsSidebar = () => {
   
   const onDragStart = (event, opType, opLabel) => {
-    // 1. Set the payload
+    // 1. Route the tool to the correct custom React Flow node component
+    let reactFlowType = 'operationNode'; // Default for generic tools
+    
+    if (opType === 'integrate') {
+      reactFlowType = 'integrationNode'; // Trigger our custom Integration Engine UI
+    }
+
+    // 2. Set the payload
     const nodeData = {
-        type: 'operationNode', // This tells Canvas "I am an operation"
+        type: reactFlowType, 
         label: opLabel,
         opType: opType 
     };
