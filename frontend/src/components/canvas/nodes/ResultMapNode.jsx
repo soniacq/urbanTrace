@@ -1,11 +1,22 @@
 import React, { memo, useMemo, useEffect } from 'react';
 import { Handle, Position, NodeResizeControl } from '@xyflow/react';
-import { Map as MapIcon, Download } from 'lucide-react';
+import { Map as MapIcon, Download, Hexagon, MapPin } from 'lucide-react';
 import H3PreviewDeckGL from '../../visualization/H3PreviewDeckGL'; 
 
 const ResultMapNode = memo(({ id, data }) => {
-  // Grab the dictionary of hexagons
+  // Check if this is a zoned result
+  const isZoned = data?.spatialData?.isZoned;
+  const outputMode = data?.spatialData?.outputMode || 'grid';
+  
+  // Grab the dictionary of hexagons (for grid output)
   const resultMapData = data?.spatialData?.data;
+  
+  // Grab the GeoJSON zones (for zoned output)
+  const zoneGeoJson = data?.spatialData?.geojson;
+  
+  // Determine what to show
+  const showHex = !isZoned || outputMode === 'grid' || outputMode === 'both';
+  const showZones = isZoned && (outputMode === 'zones' || outputMode === 'both');
   
   // 🕵️ DEBUGGING BLOCK: Inspect every single key before it touches DeckGL
 //   useEffect(() => {
@@ -24,7 +35,8 @@ const ResultMapNode = memo(({ id, data }) => {
 //     }
 //   }, [resultMapData]);
 
-  const colorHex = resultMapData?.color || '#10b981'; 
+  // Different colors for grid vs zones
+  const colorHex = showZones && !showHex ? '#10b981' : (resultMapData?.color || '#10b981'); 
   
   const rgbColor = useMemo(() => {
     const r = parseInt(colorHex.slice(1, 3), 16);
@@ -39,6 +51,18 @@ const ResultMapNode = memo(({ id, data }) => {
     }, 50);
     return () => clearTimeout(timer);
   }, []);
+
+  // Determine node title
+  const nodeTitle = useMemo(() => {
+    if (isZoned) {
+      if (outputMode === 'both') return 'H3 + Zones Result';
+      if (outputMode === 'zones') return 'Zoned Result';
+    }
+    return data.name || 'H3 Integration Result';
+  }, [isZoned, outputMode, data.name]);
+
+  // Determine header icon
+  const HeaderIcon = showZones && !showHex ? MapPin : Hexagon;
 
   return (
     <div style={{
@@ -67,8 +91,20 @@ const ResultMapNode = memo(({ id, data }) => {
       {/* Header */}
       <div style={{ backgroundColor: colorHex, color: '#fff', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderRadius: '7px 7px 0 0' }}>
          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', fontWeight: 'bold' }}>
-           <MapIcon size={14} /> {data.name || 'Integration Result'}
+           <HeaderIcon size={14} /> {nodeTitle}
          </div>
+         {/* Output mode badge */}
+         {isZoned && (
+           <div style={{
+             fontSize: '9px',
+             backgroundColor: 'rgba(255,255,255,0.2)',
+             padding: '2px 6px',
+             borderRadius: '4px',
+             textTransform: 'uppercase'
+           }}>
+             {outputMode}
+           </div>
+         )}
        </div>
 
       {/* Preview Area (Unchanged) */}
@@ -81,10 +117,16 @@ const ResultMapNode = memo(({ id, data }) => {
         position: 'relative',
         borderRadius: '0 0 8px 8px'
       }}>
-        {resultMapData && (
+        {(resultMapData || zoneGeoJson) && (
           // 👇 Wrap the map and button in an absolutely positioned container
           <div style={{ position: 'absolute', inset: 0, borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>
-            <H3PreviewDeckGL hexData={resultMapData} color={rgbColor} />
+            <H3PreviewDeckGL 
+              hexData={showHex ? resultMapData : null} 
+              geojsonData={showZones ? zoneGeoJson : null}
+              color={rgbColor}
+              showHex={showHex}
+              showZones={showZones}
+            />
           </div>
         )}
       </div>

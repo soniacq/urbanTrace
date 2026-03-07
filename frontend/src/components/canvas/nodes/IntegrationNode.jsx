@@ -1,6 +1,6 @@
 import React, { useState, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Network, Play, Link2, AlertCircle } from 'lucide-react';
+import { Network, Play, Link2, AlertCircle, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
 
 const ALLOCATION_OPS = [
   "BinaryContainment",
@@ -18,12 +18,31 @@ const AGGREGATION_OPS = [
   "DensityAggregation"
 ];
 
+const ZONING_MAPPING_OPS = [
+  "CentroidZoning",
+  "AreaWeightedZoning"
+];
+
+const ZONING_AGGREGATION_OPS = [
+  "SumZoning",
+  "WeightedMeanZoning",
+  "DensityZoning"
+];
+
 const IntegrationNode = memo(({ id, data }) => {
+  // Grid integration state
   const [allocation, setAllocation] = useState("BinaryCentroidContainment");
   const [aggregation, setAggregation] = useState("SumAggregation");
   const [targetColumn, setTargetColumn] = useState("count");
   const [resolution, setResolution] = useState(8);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Zoning state
+  const [zoningEnabled, setZoningEnabled] = useState(false);
+  const [zoningExpanded, setZoningExpanded] = useState(false);
+  const [zoningMapping, setZoningMapping] = useState("AreaWeightedZoning");
+  const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
+  const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
 
   const handleRun = async (e) => {
     e.stopPropagation();
@@ -32,30 +51,70 @@ const IntegrationNode = memo(({ id, data }) => {
       return;
     }
 
+    // If zoning is enabled but no zone dataset is connected
+    if (zoningEnabled && !data.connectedZoneFilename) {
+      alert("Please connect a zone dataset to use zoning, or disable zoning.");
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/integrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dataset_path: data.connectedDatasetFilename, 
-          target_column: targetColumn,
-          allocation_operator: allocation,
-          aggregation_operator: aggregation,
-          resolution: parseInt(resolution)
-        })
-      });
+      let response;
+      let resultData;
 
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || 'Integration failed');
+      if (zoningEnabled && data.connectedZoneFilename) {
+        // Call the zoned integration endpoint
+        response = await fetch('http://localhost:8000/api/integrate_zoned', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dataset_path: data.connectedDatasetFilename,
+            target_column: targetColumn,
+            allocation_operator: allocation,
+            grid_aggregation_operator: aggregation,
+            zoning_mapping_operator: zoningMapping,
+            zoning_aggregation_operator: zoningAggregation,
+            zones_path: data.connectedZoneFilename,
+            resolution: parseInt(resolution),
+            output_mode: outputMode
+          })
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.detail || 'Zoned integration failed');
+        }
+
+        resultData = await response.json();
+        resultData.outputMode = outputMode;
+        resultData.isZoned = true;
+
+      } else {
+        // Call the standard grid integration endpoint
+        response = await fetch('http://localhost:8000/api/integrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dataset_path: data.connectedDatasetFilename,
+            target_column: targetColumn,
+            allocation_operator: allocation,
+            aggregation_operator: aggregation,
+            resolution: parseInt(resolution)
+          })
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.detail || 'Integration failed');
+        }
+
+        resultData = await response.json();
+        resultData.isZoned = false;
       }
 
-      const resultData = await response.json();
-      
       if (data.onIntegrationComplete) {
         data.onIntegrationComplete(id, resultData);
-    }
+      }
 
     } catch (error) {
       console.error("Pipeline Error:", error);
@@ -90,7 +149,7 @@ const IntegrationNode = memo(({ id, data }) => {
 
   return (
     <div style={{
-      width: '240px',
+      width: '260px',
       backgroundColor: '#fff',
       borderRadius: '8px',
       boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
@@ -99,11 +158,28 @@ const IntegrationNode = memo(({ id, data }) => {
       fontSize: '12px',
       fontFamily: 'Inter, system-ui, sans-serif'
     }}>
-      {/* Input Handle */}
+      {/* Source Dataset Input Handle (Left) */}
       <Handle 
         type="target" 
         position={Position.Left} 
-        style={{ background: '#3b82f6', width: '8px', height: '8px', left: '-4px', border: '2px solid white' }} 
+        id="source"
+        style={{ background: '#3b82f6', width: '8px', height: '8px', left: '-4px', top: '30%', border: '2px solid white' }} 
+      />
+
+      {/* Zone Dataset Input Handle (Left, below source) */}
+      <Handle 
+        type="target" 
+        position={Position.Left}
+        id="zones"
+        style={{ 
+          background: zoningEnabled ? '#10b981' : '#9ca3af', 
+          width: '8px', 
+          height: '8px', 
+          left: '-4px', 
+          top: '70%', 
+          border: '2px solid white',
+          transition: 'background-color 0.2s'
+        }} 
       />
 
       {/* 1. Header */}
@@ -124,7 +200,7 @@ const IntegrationNode = memo(({ id, data }) => {
       {/* 2. Controls Section */}
       <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         
-        {/* Status indicator */}
+        {/* Source dataset status */}
         <div style={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -137,8 +213,8 @@ const IntegrationNode = memo(({ id, data }) => {
             border: `1px solid ${data.connectedDatasetFilename ? '#bbf7d0' : '#fde68a'}`
         }}>
             {data.connectedDatasetFilename ? <Link2 size={12} /> : <AlertCircle size={12} />}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {data.connectedDatasetFilename || 'Waiting for dataset connection...'}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                {data.connectedDatasetFilename ? `Source: ${data.connectedDatasetFilename}` : 'Connect source dataset...'}
             </span>
         </div>
 
@@ -190,9 +266,116 @@ const IntegrationNode = memo(({ id, data }) => {
           />
         </label>
 
+        {/* Zoning Section */}
+        <div style={{
+          marginTop: '4px',
+          borderTop: '1px solid #e2e8f0',
+          paddingTop: '8px'
+        }}>
+          {/* Zoning Toggle Header */}
+          <div 
+            onClick={(e) => { e.stopPropagation(); setZoningExpanded(!zoningExpanded); }}
+            className="nodrag"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              cursor: 'pointer',
+              padding: '4px 0'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input
+                type="checkbox"
+                checked={zoningEnabled}
+                onChange={(e) => { 
+                  e.stopPropagation(); 
+                  setZoningEnabled(e.target.checked);
+                  if (e.target.checked) setZoningExpanded(true);
+                }}
+                className="nodrag"
+                style={{ margin: 0, cursor: 'pointer' }}
+              />
+              <MapPin size={12} color={zoningEnabled ? '#10b981' : '#9ca3af'} />
+              <span style={{ fontSize: '10px', fontWeight: '600', color: zoningEnabled ? '#047857' : '#64748b' }}>
+                Aggregate to Zones (Z)
+              </span>
+            </div>
+            {zoningEnabled && (zoningExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+          </div>
+
+          {/* Zoning Controls */}
+          {zoningEnabled && zoningExpanded && (
+            <div style={{ 
+              marginTop: '8px', 
+              padding: '8px', 
+              backgroundColor: '#f0fdf4', 
+              borderRadius: '4px',
+              border: '1px solid #bbf7d0'
+            }}>
+              {/* Zone dataset status */}
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                fontSize: '10px', 
+                padding: '6px', 
+                borderRadius: '4px',
+                marginBottom: '8px',
+                backgroundColor: data.connectedZoneFilename ? '#ecfdf5' : '#fef3c7',
+                color: data.connectedZoneFilename ? '#047857' : '#92400e',
+                border: `1px dashed ${data.connectedZoneFilename ? '#6ee7b7' : '#fcd34d'}`
+              }}>
+                <MapPin size={10} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                  {data.connectedZoneFilename ? `Zones: ${data.connectedZoneFilename}` : 'Connect zone dataset to left handle...'}
+                </span>
+              </div>
+
+              <label style={{...labelStyle, color: '#047857'}}>
+                Zone Mapping (Z_map)
+                <select 
+                  value={zoningMapping} 
+                  onChange={e => setZoningMapping(e.target.value)}
+                  className="nodrag" 
+                  style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
+                >
+                  {ZONING_MAPPING_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                </select>
+              </label>
+
+              <label style={{...labelStyle, color: '#047857'}}>
+                Zone Aggregation (A₂)
+                <select 
+                  value={zoningAggregation} 
+                  onChange={e => setZoningAggregation(e.target.value)}
+                  className="nodrag" 
+                  style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
+                >
+                  {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                </select>
+              </label>
+
+              <label style={{...labelStyle, color: '#047857'}}>
+                Output Mode
+                <select 
+                  value={outputMode} 
+                  onChange={e => setOutputMode(e.target.value)}
+                  className="nodrag" 
+                  style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
+                >
+                  <option value="grid">H3 Grid Only</option>
+                  <option value="zones">Zones Only</option>
+                  <option value="both">Both (Grid + Zones)</option>
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
+
         <button 
           onClick={handleRun}
-          disabled={isLoading || !data.connectedDatasetFilename}
+          disabled={isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)}
           className="nodrag"
           style={{
             marginTop: '8px',
@@ -201,13 +384,13 @@ const IntegrationNode = memo(({ id, data }) => {
             alignItems: 'center',
             justifyContent: 'center',
             gap: '6px',
-            backgroundColor: (isLoading || !data.connectedDatasetFilename) ? '#cbd5e1' : '#2563eb',
+            backgroundColor: (isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)) ? '#cbd5e1' : '#2563eb',
             color: '#fff',
             border: 'none',
             borderRadius: '4px',
             fontSize: '11px',
             fontWeight: '600',
-            cursor: (isLoading || !data.connectedDatasetFilename) ? 'not-allowed' : 'pointer',
+            cursor: (isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)) ? 'not-allowed' : 'pointer',
             transition: 'background-color 0.2s'
           }}
         >

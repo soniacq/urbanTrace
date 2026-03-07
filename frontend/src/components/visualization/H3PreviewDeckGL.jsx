@@ -1,9 +1,10 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
+import { GeoJsonLayer } from '@deck.gl/layers';
 import { Layers } from 'lucide-react'; 
 
-const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {  
+const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex = true, showZones = false }) => {  
   // 👇 1. Add a ref to track the container and a state for readiness
     const containerRef = useRef(null);
     const [isReady, setIsReady] = useState(false);
@@ -60,24 +61,98 @@ const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {
     return { data: parsedData, maxCount: max };
   }, [hexData]);
 
-  const layers = [
-    new H3HexagonLayer({
-      id: 'h3-hexagon-layer',
-      data,
-      pickable: true,
-      wireframe: false,
-      filled: true,
-      extruded: is3D, 
-      elevationScale: 20,
-      getHexagon: d => d.hex,
-      getFillColor: d => {
-        const intensity = maxCount > 1 ? (d.count / maxCount) : 1;
-        const alpha = is3D ? 200 : Math.floor(80 + (175 * intensity));
-        return [color[0], color[1], color[2], alpha];
-      },
-      getElevation: d => d.count
-    })
-  ];
+  // Process GeoJSON zone data
+  const { zoneFeatures, maxZoneValue } = useMemo(() => {
+    if (!geojsonData?.features) {
+      return { zoneFeatures: null, maxZoneValue: 1 };
+    }
+    let max = 1;
+    geojsonData.features.forEach(f => {
+      const val = f.properties?.zone_value || 0;
+      if (val > max) max = val;
+    });
+    return { zoneFeatures: geojsonData, maxZoneValue: max };
+  }, [geojsonData]);
+
+  const layers = useMemo(() => {
+    const result = [];
+
+    // H3 Hexagon Layer (if showing hex data)
+    if (showHex && data.length > 0) {
+      result.push(
+        new H3HexagonLayer({
+          id: 'h3-hexagon-layer',
+          data,
+          pickable: true,
+          wireframe: false,
+          filled: true,
+          extruded: is3D, 
+          elevationScale: 20,
+          getHexagon: d => d.hex,
+          getFillColor: d => {
+            const intensity = maxCount > 1 ? (d.count / maxCount) : 1;
+            const alpha = is3D ? 200 : Math.floor(80 + (175 * intensity));
+            return [color[0], color[1], color[2], alpha];
+          },
+          getElevation: d => d.count
+        })
+      );
+    }
+
+    // GeoJSON Zone Layer (if showing zones)
+    if (showZones && zoneFeatures) {
+      result.push(
+        new GeoJsonLayer({
+          id: 'zone-layer',
+          data: zoneFeatures,
+          pickable: true,
+          stroked: true,
+          filled: true,
+          extruded: is3D,
+          wireframe: is3D,
+          lineWidthMinPixels: 1,
+          getFillColor: f => {
+            const val = f.properties?.zone_value || 0;
+            const intensity = maxZoneValue > 0 ? (val / maxZoneValue) : 0;
+            // Use a different color scheme for zones (green)
+            const alpha = is3D ? 180 : Math.floor(60 + (140 * intensity));
+            return [16, 185, 129, alpha]; // Emerald green
+          },
+          getLineColor: [15, 118, 110, 200], // Teal border
+          getLineWidth: 2,
+          getElevation: f => (f.properties?.zone_value || 0) * 10,
+          elevationScale: is3D ? 50 : 0
+        })
+      );
+    }
+
+    return result;
+  }, [data, maxCount, zoneFeatures, maxZoneValue, showHex, showZones, is3D, color]);
+
+  // Auto-fit to zone bounds if showing zones
+  useEffect(() => {
+    if (showZones && zoneFeatures?.features?.length > 0) {
+      // Calculate centroid of first feature as initial view
+      const firstFeature = zoneFeatures.features[0];
+      const coords = firstFeature.geometry?.coordinates;
+      if (coords && coords[0] && coords[0][0]) {
+        // Handle polygon coordinates
+        const flatCoords = coords[0].flat ? coords[0] : coords[0][0];
+        if (flatCoords && flatCoords.length >= 2) {
+          const lng = flatCoords[0];
+          const lat = flatCoords[1];
+          if (typeof lng === 'number' && typeof lat === 'number') {
+            setViewState(prev => ({
+              ...prev,
+              longitude: lng,
+              latitude: lat,
+              zoom: 10
+            }));
+          }
+        }
+      }
+    }
+  }, [zoneFeatures, showZones]);
 
   return (
       <div ref={containerRef} className="nodrag nowheel" style={{ position: 'relative', width: '100%', height: '100%', borderRadius: '0 0 8px 8px', overflow: 'hidden' }}>       {/* 👇 4. Wrap DeckGL so it physically cannot render while dimensions are 0x0 */}
@@ -87,29 +162,60 @@ const H3PreviewDeckGL = ({ hexData, color = [236, 72, 153] }) => {
           onViewStateChange={({ viewState }) => setViewState(viewState)}
           controller={true}
           layers={layers}
-          getTooltip={({ object }) => {
+          getTooltip={({ object, layer }) => {
             if (!object) return null;
-            return {
-              html: `
-                <div style="font-family: sans-serif;">
-                  <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
-                    Hex ID: ${object.hex.slice(0, 8)}...
+            
+            // Handle H3 hexagon tooltip
+            if (layer?.id === 'h3-hexagon-layer') {
+              return {
+                html: `
+                  <div style="font-family: sans-serif;">
+                    <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
+                      Hex ID: ${object.hex.slice(0, 8)}...
+                    </div>
+                    <div><strong>Value:</strong> ${object.count}</div>
+                    ${object.sources?.length ? `<div style="margin-top: 4px;"><strong>Sources:</strong> ${object.sources.join(', ')}</div>` : ''}
                   </div>
-                  <div><strong>Overlaps:</strong> ${object.count}</div>
-                  ${object.sources?.length ? `<div style="margin-top: 4px;"><strong>Sources:</strong> ${object.sources.join(', ')}</div>` : ''}
-                </div>
-              `,
-              style: {
-                backgroundColor: '#1e293b',
-                color: '#f8fafc',
-                fontSize: '11px',
-                padding: '8px',
-                borderRadius: '6px',
-                boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
-                maxWidth: '220px',
-                border: '1px solid #334155'
-              }
-            };
+                `,
+                style: {
+                  backgroundColor: '#1e293b',
+                  color: '#f8fafc',
+                  fontSize: '11px',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                  maxWidth: '220px',
+                  border: '1px solid #334155'
+                }
+              };
+            }
+            
+            // Handle Zone polygon tooltip
+            if (layer?.id === 'zone-layer' && object.properties) {
+              const props = object.properties;
+              return {
+                html: `
+                  <div style="font-family: sans-serif;">
+                    <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
+                      Zone: ${props.zone_id || 'Unknown'}
+                    </div>
+                    <div><strong>Value:</strong> ${props.zone_value?.toFixed(2) || 'N/A'}</div>
+                  </div>
+                `,
+                style: {
+                  backgroundColor: '#064e3b',
+                  color: '#f8fafc',
+                  fontSize: '11px',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                  maxWidth: '220px',
+                  border: '1px solid #10b981'
+                }
+              };
+            }
+            
+            return null;
           }}
         />
        )}

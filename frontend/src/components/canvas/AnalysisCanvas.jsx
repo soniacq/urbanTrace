@@ -88,16 +88,32 @@ const CanvasInner = () => {
       const sourceNode = nds.find(n => n.id === params.source);
       const targetNode = nds.find(n => n.id === params.target);
 
+      // Handle connections to IntegrationNode
       if (targetNode?.type === 'integrationNode' && sourceNode?.data?.filename) {
         return nds.map(node => {
           if (node.id === params.target) {
-            return {
-              ...node,
-              data: {
-                ...node.data,
-                connectedDatasetFilename: sourceNode.data.filename
-              }
-            };
+            // Determine which handle was connected to
+            const handleId = params.targetHandle;
+            
+            if (handleId === 'zones') {
+              // Zone dataset connection
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  connectedZoneFilename: sourceNode.data.filename
+                }
+              };
+            } else {
+              // Source dataset connection (default "source" handle)
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  connectedDatasetFilename: sourceNode.data.filename
+                }
+              };
+            }
           }
           return node;
         });

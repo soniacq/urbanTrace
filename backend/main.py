@@ -110,6 +110,7 @@ class ZonedIntegrationRequest(BaseModel):
     zoning_aggregation_operator: str  # A_2: zone-level aggregation
     zones_path: str                # Reporting zones dataset filename
     resolution: int = 9            # H3 grid resolution
+    output_mode: str = "zones"     # "grid" | "zones" | "both"
 
 
 # ==========================================
@@ -425,21 +426,60 @@ async def integrate_to_zones(request: ZonedIntegrationRequest):
             zoning_aggregator=zoning_aggregator
         )
         
-        result_gdf = pipeline.run(
-            source_gdf=source_gdf,
-            target_column=request.target_column,
-            resolution=request.resolution,
-            zones_gdf=zones_gdf
-        )
-
-        # Return as GeoJSON for mapping
-        return {
+        # Determine output mode
+        output_mode = getattr(request, 'output_mode', 'zones')
+        
+        response = {
             "status": "success",
             "operation": "zoned_integration",
             "resolution": request.resolution,
-            "zone_count": len(result_gdf),
-            "geojson": json.loads(result_gdf.to_json())
         }
+        
+        # Generate grid data if needed (for "grid" or "both" modes)
+        if output_mode in ["grid", "both"]:
+            grid_result_gdf = pipeline.run_grid_only(
+                source_gdf=source_gdf,
+                target_column=request.target_column,
+                resolution=request.resolution
+            )
+            
+            # Convert grid GeoDataFrame to H3 hex dictionary format
+            df_no_geom = grid_result_gdf.drop(columns=['geometry'])
+            final_hex_data = {}
+            
+            for _, row in df_no_geom.iterrows():
+                row_dict = row.to_dict()
+                cell_id = row_dict.pop('cell_id', None)
+                if not cell_id:
+                    continue
+                    
+                # Find the primary calculated value
+                primary_value = 1
+                for key, val in row_dict.items():
+                    if key != 'area' and isinstance(val, (int, float)):
+                        primary_value = val
+                        break
+                
+                final_hex_data[cell_id] = {
+                    "count": primary_value,
+                    "sample_props": row_dict
+                }
+            
+            response["data"] = final_hex_data
+            response["hex_count"] = len(final_hex_data)
+        
+        # Generate zone data if needed (for "zones" or "both" modes)
+        if output_mode in ["zones", "both"]:
+            zone_result_gdf = pipeline.run(
+                source_gdf=source_gdf,
+                target_column=request.target_column,
+                resolution=request.resolution,
+                zones_gdf=zones_gdf
+            )
+            response["geojson"] = json.loads(zone_result_gdf.to_json())
+            response["zone_count"] = len(zone_result_gdf)
+        
+        return response
 
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
