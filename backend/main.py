@@ -437,10 +437,13 @@ async def integrate_to_zones(request: ZonedIntegrationRequest):
         
         # Generate grid data if needed (for "grid" or "both" modes)
         if output_mode in ["grid", "both"]:
-            grid_result_gdf = pipeline.run_grid_only(
+            # Use run_grid_with_zone_values to paint zone-aggregated values back to cells
+            # This ensures cells within a zone all show the same aggregated value
+            grid_result_gdf = pipeline.run_grid_with_zone_values(
                 source_gdf=source_gdf,
                 target_column=request.target_column,
-                resolution=request.resolution
+                resolution=request.resolution,
+                zones_gdf=zones_gdf
             )
             
             # Convert grid GeoDataFrame to H3 hex dictionary format
@@ -453,12 +456,8 @@ async def integrate_to_zones(request: ZonedIntegrationRequest):
                 if not cell_id:
                     continue
                     
-                # Find the primary calculated value
-                primary_value = 1
-                for key, val in row_dict.items():
-                    if key != 'area' and isinstance(val, (int, float)):
-                        primary_value = val
-                        break
+                # Use the zone_aggregated_value as the primary value
+                primary_value = row_dict.get('zone_aggregated_value', 1)
                 
                 final_hex_data[cell_id] = {
                     "count": primary_value,

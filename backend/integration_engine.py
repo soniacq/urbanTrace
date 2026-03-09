@@ -162,6 +162,92 @@ class ZonedIntegrationPipeline:
         
         return final_zones_gdf
     
+    def run_grid_with_zone_values(
+        self, 
+        source_gdf: gpd.GeoDataFrame, 
+        target_column: str, 
+        resolution: int,
+        zones_gdf: gpd.GeoDataFrame
+    ) -> gpd.GeoDataFrame:
+        """
+        Runs the full zoned integration, then paints zone values back to grid cells.
+        
+        Pipeline: D^(k) → R → A_1 → x_j → Z_map → A_2 → y_ℓ → paint back to cells
+        
+        Each H3 cell receives the aggregated value of the zone it belongs to.
+        For cells overlapping multiple zones, uses weighted average based on gamma.
+        
+        Returns:
+            GeoDataFrame of grid cells with zone-aggregated values
+        """
+        # 0. Ensure required ID columns exist
+        if 'source_id' not in source_gdf.columns:
+            source_gdf = source_gdf.copy()
+            source_gdf['source_id'] = source_gdf.index.astype(str)
+            
+        if 'zone_id' not in zones_gdf.columns:
+            zones_gdf = zones_gdf.copy()
+            zones_gdf['zone_id'] = zones_gdf.index.astype(str)
+
+        # 1. Validate geometry constraints
+        self.allocator.validate_geometry(source_gdf)
+        
+        # 2. Generate common grid support S
+        bounds = tuple(source_gdf.total_bounds)
+        grid_gdf = self.grid_system.generate_grid(bounds, resolution)
+        
+        # 3. Allocation: R maps source geometries to grid cells
+        weights_df = self.allocator.calculate_weights(source_gdf, grid_gdf)
+        
+        # 4. Bind source attribute values to allocation weights
+        weights_df = weights_df.merge(
+            source_gdf[['source_id', target_column]], 
+            on='source_id', 
+            how='inner'
+        ).rename(columns={target_column: 'source_value'})
+        
+        # 5. Grid aggregation A_1
+        grid_values_df = self.grid_aggregator.aggregate(weights_df, grid_gdf)
+        
+        # 6. Zoning mapping: Z_map assigns grid cells to reporting zones
+        zoning_weights_df = self.zoning_mapper.map_to_zones(grid_gdf, zones_gdf)
+        
+        # 7. Zoning aggregation A_2: get zone-level values
+        zone_values_df = self.zoning_aggregator.aggregate(
+            zoning_weights_df, 
+            grid_values_df, 
+            zones_gdf
+        )
+        
+        # 8. PAINT BACK: Assign zone values to cells
+        # Join zone values onto the zoning weights (cell_id, zone_id, gamma)
+        cell_zone_values = zoning_weights_df.merge(
+            zone_values_df,
+            on='zone_id',
+            how='inner'
+        )
+        
+        # For cells in multiple zones, compute weighted average of zone values
+        # Weighted by gamma (the cell-to-zone mapping weight)
+        cell_zone_values['weighted_zone_val'] = cell_zone_values['gamma'] * cell_zone_values['zone_value']
+        
+        cell_aggregated = cell_zone_values.groupby('cell_id').agg(
+            sum_weighted_val=('weighted_zone_val', 'sum'),
+            sum_gamma=('gamma', 'sum')
+        ).reset_index()
+        
+        cell_aggregated['zone_aggregated_value'] = cell_aggregated['sum_weighted_val'] / cell_aggregated['sum_gamma']
+        cell_aggregated['zone_aggregated_value'] = cell_aggregated['zone_aggregated_value'].fillna(0)
+        
+        # 9. Build final output: grid cells with zone-aggregated values
+        final_grid_gdf = grid_gdf[['cell_id', 'geometry', 'area']].merge(
+            cell_aggregated[['cell_id', 'zone_aggregated_value']],
+            on='cell_id',
+            how='inner'
+        )
+        
+        return final_grid_gdf
+    
     def run_grid_only(
         self, 
         source_gdf: gpd.GeoDataFrame, 
