@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Network, Play, Link2, AlertCircle, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
+import { Network, Play, Link2, AlertCircle, MapPin, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 
 const ALLOCATION_OPS = [
   "BinaryContainment",
@@ -43,13 +43,44 @@ const ZONING_AGGREGATION_OPS = [
   "LengthWeightedZoning"
 ];
 
+// =============================================================================
+// MATH-SAFE MAPPINGS
+// =============================================================================
+
+// Change 1: Geometry → Allocation mapping (auto-allocation)
+const GEOMETRY_TO_ALLOCATION = {
+  "Polygon": "ProportionalAreaWeighted",
+  "MultiPolygon": "ProportionalAreaWeighted",
+  "LineString": "ProportionalLengthWeighted",
+  "MultiLineString": "ProportionalLengthWeighted",
+  "Point": "NearestAssignment",
+  "MultiPoint": "NearestAssignment"
+};
+
+// Change 2: Zone Aggregator → Grid Aggregator mapping (reverse-sync)
+const ZONE_TO_GRID_AGGREGATION = {
+  "SumZoning": "SumAggregation",
+  "WeightedMeanZoning": "WeightedMeanAggregation",
+  "DensityZoning": "DensityAggregation",
+  "MajorityZoning": "MajorityAggregation",
+  "MaxZoning": "MaxAggregation",
+  "MinZoning": "MinAggregation",
+  "LengthWeightedZoning": "LengthWeightedAggregation"
+};
+
 const IntegrationNode = memo(({ id, data }) => {
   // Grid integration state
-  const [allocation, setAllocation] = useState("BinaryCentroidContainment");
+  const [allocation, setAllocation] = useState("ProportionalAreaWeighted");
   const [aggregation, setAggregation] = useState("SumAggregation");
   const [targetColumn, setTargetColumn] = useState("");
   const [resolution, setResolution] = useState(8);
   const [isLoading, setIsLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Extract geometry type from connected dataset metadata
+  const geometryType = useMemo(() => {
+    return data.connectedDatasetMetadata?.geometricType || null;
+  }, [data.connectedDatasetMetadata]);
 
   // Extract numeric columns from connected dataset metadata
   const numericColumns = useMemo(() => {
@@ -68,12 +99,32 @@ const IntegrationNode = memo(({ id, data }) => {
     }
   }, [numericColumns, targetColumn]);
 
+  // ==========================================================================
+  // Change 1: Geometry-Based Auto-Allocation
+  // Automatically set the safest allocator based on geometry type
+  // ==========================================================================
+  useEffect(() => {
+    if (geometryType && GEOMETRY_TO_ALLOCATION[geometryType]) {
+      setAllocation(GEOMETRY_TO_ALLOCATION[geometryType]);
+    }
+  }, [geometryType]);
+
   // Zoning state
   const [zoningEnabled, setZoningEnabled] = useState(false);
   const [zoningExpanded, setZoningExpanded] = useState(false);
   const [zoningMapping, setZoningMapping] = useState("AreaWeightedZoning");
   const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
   const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
+
+  // ==========================================================================
+  // Change 2: Reverse-Sync - Zone Aggregator auto-sets Grid Aggregator
+  // When user selects their final output math, we backfill the grid step
+  // ==========================================================================
+  useEffect(() => {
+    if (zoningEnabled && ZONE_TO_GRID_AGGREGATION[zoningAggregation]) {
+      setAggregation(ZONE_TO_GRID_AGGREGATION[zoningAggregation]);
+    }
+  }, [zoningEnabled, zoningAggregation]);
 
   const handleRun = useCallback(async (e) => {
     e.stopPropagation();
@@ -244,7 +295,7 @@ const IntegrationNode = memo(({ id, data }) => {
       {/* 2. Controls Section */}
       <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         
-        {/* Source dataset status */}
+        {/* Source dataset status with geometry indicator */}
         <div style={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -260,6 +311,18 @@ const IntegrationNode = memo(({ id, data }) => {
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                 {data.connectedDatasetFilename ? `Source: ${data.connectedDatasetFilename}` : 'Connect source dataset...'}
             </span>
+            {geometryType && (
+              <span style={{ 
+                backgroundColor: '#dbeafe', 
+                color: '#1d4ed8', 
+                padding: '1px 4px', 
+                borderRadius: '3px',
+                fontSize: '9px',
+                fontWeight: '600'
+              }}>
+                {geometryType}
+              </span>
+            )}
         </div>
 
         <label style={labelStyle}>
@@ -279,29 +342,34 @@ const IntegrationNode = memo(({ id, data }) => {
           </select>
         </label>
 
-        <label style={labelStyle}>
-          Allocation (R)
-          <select 
-            value={allocation} 
-            onChange={e => setAllocation(e.target.value)}
-            className="nodrag" 
-            style={{...inputStyle, cursor: 'pointer'}}
-          >
-            {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-          </select>
-        </label>
+        {/* Grid settings - show inline when no zoning, hide behind Advanced when zoning */}
+        {!zoningEnabled && (
+          <>
+            <label style={labelStyle}>
+              Allocation (R)
+              <select 
+                value={allocation} 
+                onChange={e => setAllocation(e.target.value)}
+                className="nodrag" 
+                style={{...inputStyle, cursor: 'pointer'}}
+              >
+                {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+              </select>
+            </label>
 
-        <label style={labelStyle}>
-          Aggregation (A₁)
-          <select 
-            value={aggregation} 
-            onChange={e => setAggregation(e.target.value)}
-            className="nodrag" 
-            style={{...inputStyle, cursor: 'pointer'}}
-          >
-            {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-          </select>
-        </label>
+            <label style={labelStyle}>
+              Aggregation (A₁)
+              <select 
+                value={aggregation} 
+                onChange={e => setAggregation(e.target.value)}
+                className="nodrag" 
+                style={{...inputStyle, cursor: 'pointer'}}
+              >
+                {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+              </select>
+            </label>
+          </>
+        )}
 
         <label style={labelStyle}>
           H3 Resolution
@@ -418,6 +486,57 @@ const IntegrationNode = memo(({ id, data }) => {
                   <option value="both">Both (Grid + Zones)</option>
                 </select>
               </label>
+
+              {/* Advanced Settings - Grid step overrides */}
+              <div 
+                onClick={(e) => { e.stopPropagation(); setShowAdvanced(!showAdvanced); }}
+                className="nodrag"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  marginTop: '8px',
+                  paddingTop: '8px',
+                  borderTop: '1px dashed #6ee7b7',
+                  cursor: 'pointer',
+                  color: '#6b7280',
+                  fontSize: '9px'
+                }}
+              >
+                <Settings size={10} />
+                <span>Advanced (Grid Step)</span>
+                {showAdvanced ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+              </div>
+
+              {showAdvanced && (
+                <div style={{ marginTop: '6px', padding: '6px', backgroundColor: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '6px' }}>
+                    ⚡ Auto-set from geometry & zone aggregator
+                  </div>
+                  <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
+                    Allocation (R)
+                    <select 
+                      value={allocation} 
+                      onChange={e => setAllocation(e.target.value)}
+                      className="nodrag" 
+                      style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                    >
+                      {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                    </select>
+                  </label>
+                  <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
+                    Grid Aggregation (A₁)
+                    <select 
+                      value={aggregation} 
+                      onChange={e => setAggregation(e.target.value)}
+                      className="nodrag" 
+                      style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                    >
+                      {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
             </div>
           )}
         </div>
