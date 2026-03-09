@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, memo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Network, Play, Link2, AlertCircle, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
 
@@ -75,7 +75,7 @@ const IntegrationNode = memo(({ id, data }) => {
   const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
   const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
 
-  const handleRun = async (e) => {
+  const handleRun = useCallback(async (e) => {
     e.stopPropagation();
     if (!data.connectedDatasetFilename) {
       alert("Please connect a dataset node to the Integration Engine first.");
@@ -153,7 +153,20 @@ const IntegrationNode = memo(({ id, data }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [
+    id,
+    data.connectedDatasetFilename,
+    data.connectedZoneFilename,
+    data.onIntegrationComplete,
+    targetColumn,
+    allocation,
+    aggregation,
+    resolution,
+    zoningEnabled,
+    zoningMapping,
+    zoningAggregation,
+    outputMode
+  ]);
 
   // Shared input styling to keep things consistent
   const inputStyle = {
