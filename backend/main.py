@@ -13,10 +13,16 @@ from operators.allocation.binary import BinaryContainment, BinaryCentroidContain
 from operators.allocation.proportional import ProportionalAreaWeighted, ProportionalLengthWeighted
 from operators.allocation.kernel import GaussianKernel
 
-from operators.aggregation.aggregators import SumAggregation, MeanAggregation, WeightedMeanAggregation, DensityAggregation
+from operators.aggregation.aggregators import (
+    SumAggregation, MeanAggregation, WeightedMeanAggregation, DensityAggregation,
+    MajorityAggregation, MaxAggregation, MinAggregation, LengthWeightedAggregation
+)
 
 from operators.zoning.mapping import CentroidZoning, AreaWeightedZoning
-from operators.zoning.aggregators import SumZoning, WeightedMeanZoning, DensityZoning
+from operators.zoning.aggregators import (
+    SumZoning, WeightedMeanZoning, DensityZoning,
+    MajorityZoning, MaxZoning, MinZoning, LengthWeightedZoning
+)
 
 # --- Imports for Map Algebra Engine ---
 from h3_engine import rasterize_geojson_to_h3 
@@ -50,10 +56,17 @@ ALLOCATION_REGISTRY = {
 }
 
 AGGREGATION_REGISTRY = {
+    # Mathematical operators (continuous/additive data)
     "SumAggregation": SumAggregation,
     "MeanAggregation": MeanAggregation,
     "WeightedMeanAggregation": WeightedMeanAggregation,
-    "DensityAggregation": DensityAggregation
+    "DensityAggregation": DensityAggregation,
+    # Discrete selection operators (categorical/index data)
+    "MajorityAggregation": MajorityAggregation,
+    "MaxAggregation": MaxAggregation,
+    "MinAggregation": MinAggregation,
+    # Line network operators (street/transit geometries)
+    "LengthWeightedAggregation": LengthWeightedAggregation
 }
 
 # Zoning Operator Registries
@@ -63,9 +76,16 @@ ZONING_MAPPING_REGISTRY = {
 }
 
 ZONING_AGGREGATION_REGISTRY = {
+    # Mathematical operators (for continuous/additive data)
     "SumZoning": SumZoning,
     "WeightedMeanZoning": WeightedMeanZoning,
-    "DensityZoning": DensityZoning
+    "DensityZoning": DensityZoning,
+    # Discrete selection operators (for categorical/index data)
+    "MajorityZoning": MajorityZoning,
+    "MaxZoning": MaxZoning,
+    "MinZoning": MinZoning,
+    # Line network operators (for street/transit geometries)
+    "LengthWeightedZoning": LengthWeightedZoning
 }
 
 # Geometry constraints for valid operator selection

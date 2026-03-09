@@ -12,10 +12,17 @@ const ALLOCATION_OPS = [
 ];
 
 const AGGREGATION_OPS = [
+  // Mathematical operators (continuous/additive data)
   "SumAggregation",
   "MeanAggregation",
   "WeightedMeanAggregation",
-  "DensityAggregation"
+  "DensityAggregation",
+  // Discrete selection operators (categorical/index data)
+  "MajorityAggregation",
+  "MaxAggregation",
+  "MinAggregation",
+  // Line network operators (street/transit geometries)
+  "LengthWeightedAggregation"
 ];
 
 const ZONING_MAPPING_OPS = [
@@ -24,9 +31,16 @@ const ZONING_MAPPING_OPS = [
 ];
 
 const ZONING_AGGREGATION_OPS = [
+  // Mathematical operators (continuous/additive data)
   "SumZoning",
   "WeightedMeanZoning",
-  "DensityZoning"
+  "DensityZoning",
+  // Discrete selection operators (categorical/index data)
+  "MajorityZoning",
+  "MaxZoning",
+  "MinZoning",
+  // Line network operators (street/transit geometries)
+  "LengthWeightedZoning"
 ];
 
 const IntegrationNode = memo(({ id, data }) => {
