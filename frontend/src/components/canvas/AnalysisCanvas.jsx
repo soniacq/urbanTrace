@@ -101,7 +101,8 @@ const CanvasInner = () => {
                 ...node,
                 data: {
                   ...node.data,
-                  connectedZoneFilename: sourceNode.data.filename
+                  connectedZoneFilename: sourceNode.data.filename,
+                  connectedZoneMetadata: sourceNode.data.metadata
                 }
               };
             } else {
@@ -110,7 +111,8 @@ const CanvasInner = () => {
                 ...node,
                 data: {
                   ...node.data,
-                  connectedDatasetFilename: sourceNode.data.filename
+                  connectedDatasetFilename: sourceNode.data.filename,
+                  connectedDatasetMetadata: sourceNode.data.metadata
                 }
               };
             }

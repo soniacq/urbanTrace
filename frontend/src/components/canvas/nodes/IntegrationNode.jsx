@@ -1,4 +1,4 @@
-import React, { useState, memo } from 'react';
+import React, { useState, useMemo, useEffect, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Network, Play, Link2, AlertCircle, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
 
@@ -33,9 +33,26 @@ const IntegrationNode = memo(({ id, data }) => {
   // Grid integration state
   const [allocation, setAllocation] = useState("BinaryCentroidContainment");
   const [aggregation, setAggregation] = useState("SumAggregation");
-  const [targetColumn, setTargetColumn] = useState("count");
+  const [targetColumn, setTargetColumn] = useState("");
   const [resolution, setResolution] = useState(8);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Extract numeric columns from connected dataset metadata
+  const numericColumns = useMemo(() => {
+    const meta = data.connectedDatasetMetadata;
+    if (!meta?.columns) return [];
+    return meta.columns.filter(c => 
+      ['Integer', 'Float', 'http://schema.org/Integer', 'http://schema.org/Float'].includes(c.structural_type) 
+      || (c.mean !== undefined)
+    ).map(c => c.name);
+  }, [data.connectedDatasetMetadata]);
+
+  // Auto-select first numeric column when dataset changes
+  useEffect(() => {
+    if (numericColumns.length > 0 && !numericColumns.includes(targetColumn)) {
+      setTargetColumn(numericColumns[0]);
+    }
+  }, [numericColumns, targetColumn]);
 
   // Zoning state
   const [zoningEnabled, setZoningEnabled] = useState(false);
@@ -220,14 +237,19 @@ const IntegrationNode = memo(({ id, data }) => {
 
         <label style={labelStyle}>
           Target Column
-          <input 
-            type="text" 
+          <select 
             value={targetColumn} 
             onChange={e => setTargetColumn(e.target.value)}
             className="nodrag"
-            style={inputStyle}
-            placeholder="e.g. population"
-          />
+            style={{...inputStyle, cursor: 'pointer'}}
+            disabled={numericColumns.length === 0}
+          >
+            {numericColumns.length === 0 ? (
+              <option value="">Connect dataset first...</option>
+            ) : (
+              numericColumns.map(col => <option key={col} value={col}>{col}</option>)
+            )}
+          </select>
         </label>
 
         <label style={labelStyle}>
@@ -375,7 +397,7 @@ const IntegrationNode = memo(({ id, data }) => {
 
         <button 
           onClick={handleRun}
-          disabled={isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)}
+          disabled={isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)}
           className="nodrag"
           style={{
             marginTop: '8px',
@@ -384,13 +406,13 @@ const IntegrationNode = memo(({ id, data }) => {
             alignItems: 'center',
             justifyContent: 'center',
             gap: '6px',
-            backgroundColor: (isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)) ? '#cbd5e1' : '#2563eb',
+            backgroundColor: (isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)) ? '#cbd5e1' : '#2563eb',
             color: '#fff',
             border: 'none',
             borderRadius: '4px',
             fontSize: '11px',
             fontWeight: '600',
-            cursor: (isLoading || !data.connectedDatasetFilename || (zoningEnabled && !data.connectedZoneFilename)) ? 'not-allowed' : 'pointer',
+            cursor: (isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)) ? 'not-allowed' : 'pointer',
             transition: 'background-color 0.2s'
           }}
         >
