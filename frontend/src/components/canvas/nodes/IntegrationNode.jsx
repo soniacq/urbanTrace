@@ -47,7 +47,7 @@ const ZONING_AGGREGATION_OPS = [
 // MATH-SAFE MAPPINGS
 // =============================================================================
 
-// Change 1: Geometry → Allocation mapping (auto-allocation)
+// Geometry → Allocation mapping (auto-allocation)
 const GEOMETRY_TO_ALLOCATION = {
   "Polygon": "ProportionalAreaWeighted",
   "MultiPolygon": "ProportionalAreaWeighted",
@@ -57,7 +57,7 @@ const GEOMETRY_TO_ALLOCATION = {
   "MultiPoint": "NearestAssignment"
 };
 
-// Change 2: Zone Aggregator → Grid Aggregator mapping (reverse-sync)
+// Zone Aggregator → Grid Aggregator mapping (reverse-sync)
 const ZONE_TO_GRID_AGGREGATION = {
   "SumZoning": "SumAggregation",
   "WeightedMeanZoning": "WeightedMeanAggregation",
@@ -69,7 +69,17 @@ const ZONE_TO_GRID_AGGREGATION = {
 };
 
 const IntegrationNode = memo(({ id, data }) => {
-  // Grid integration state
+  // ==========================================================================
+  // MULTIVARIATE STATE - Variable Cards
+  // ==========================================================================
+  const [variableConfigs, setVariableConfigs] = useState({});
+  const [expandedCards, setExpandedCards] = useState({});
+  
+  // Check if we're in multivariate mode (multiple datasets connected)
+  const connectedDatasets = data.connectedDatasets || [];
+  const isMultivariate = connectedDatasets.length > 1;
+
+  // Legacy single-variable state (for backward compatibility)
   const [allocation, setAllocation] = useState("ProportionalAreaWeighted");
   const [aggregation, setAggregation] = useState("SumAggregation");
   const [targetColumn, setTargetColumn] = useState("");
@@ -77,12 +87,72 @@ const IntegrationNode = memo(({ id, data }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Extract geometry type from connected dataset metadata
+  // Initialize variable configs when datasets connect
+  useEffect(() => {
+    const newConfigs = { ...variableConfigs };
+    let configsChanged = false;
+    
+    connectedDatasets.forEach(dataset => {
+      if (!newConfigs[dataset.id]) {
+        newConfigs[dataset.id] = {
+          id: dataset.id,
+          nodeId: dataset.nodeId,
+          filename: dataset.filename,
+          metadata: dataset.metadata,
+          targetColumn: '',
+          allocation: GEOMETRY_TO_ALLOCATION[dataset.metadata?.geometricType] || 'ProportionalAreaWeighted',
+          aggregation: 'SumAggregation',
+          zoningMapping: 'AreaWeightedZoning',
+          zoningAggregation: 'SumZoning'
+        };
+        configsChanged = true;
+      }
+    });
+    
+    // Remove configs for disconnected datasets
+    Object.keys(newConfigs).forEach(id => {
+      if (!connectedDatasets.find(d => d.id === id)) {
+        delete newConfigs[id];
+        configsChanged = true;
+      }
+    });
+    
+    if (configsChanged) {
+      setVariableConfigs(newConfigs);
+    }
+  }, [connectedDatasets]);
+
+  // Update a specific variable's config
+  const updateVariableConfig = useCallback((varId, updates) => {
+    setVariableConfigs(prev => ({
+      ...prev,
+      [varId]: { ...prev[varId], ...updates }
+    }));
+  }, []);
+
+  // Remove a variable
+  const removeVariable = useCallback((varId) => {
+    setVariableConfigs(prev => {
+      const next = { ...prev };
+      delete next[varId];
+      return next;
+    });
+  }, []);
+
+  // Toggle card expansion
+  const toggleCardExpand = useCallback((varId) => {
+    setExpandedCards(prev => ({
+      ...prev,
+      [varId]: !prev[varId]
+    }));
+  }, []);
+
+  // Extract geometry type from connected dataset metadata (legacy)
   const geometryType = useMemo(() => {
     return data.connectedDatasetMetadata?.geometricType || null;
   }, [data.connectedDatasetMetadata]);
 
-  // Extract numeric columns from connected dataset metadata
+  // Extract numeric columns from connected dataset metadata (legacy)
   const numericColumns = useMemo(() => {
     const meta = data.connectedDatasetMetadata;
     if (!meta?.columns) return [];
@@ -92,17 +162,14 @@ const IntegrationNode = memo(({ id, data }) => {
     ).map(c => c.name);
   }, [data.connectedDatasetMetadata]);
 
-  // Auto-select first numeric column when dataset changes
+  // Auto-select first numeric column when dataset changes (legacy)
   useEffect(() => {
     if (numericColumns.length > 0 && !numericColumns.includes(targetColumn)) {
       setTargetColumn(numericColumns[0]);
     }
   }, [numericColumns, targetColumn]);
 
-  // ==========================================================================
-  // Change 1: Geometry-Based Auto-Allocation
-  // Automatically set the safest allocator based on geometry type
-  // ==========================================================================
+  // Geometry-Based Auto-Allocation (legacy)
   useEffect(() => {
     if (geometryType && GEOMETRY_TO_ALLOCATION[geometryType]) {
       setAllocation(GEOMETRY_TO_ALLOCATION[geometryType]);
@@ -116,8 +183,7 @@ const IntegrationNode = memo(({ id, data }) => {
   const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
   const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
 
-  // ==========================================================================
-  // Change 2: Reverse-Sync - Zone Aggregator auto-sets Grid Aggregator
+  // Reverse-Sync - Zone Aggregator auto-sets Grid Aggregator (legacy)
   // When user selects their final output math, we backfill the grid step
   // ==========================================================================
   useEffect(() => {
@@ -128,6 +194,74 @@ const IntegrationNode = memo(({ id, data }) => {
 
   const handleRun = useCallback(async (e) => {
     e.stopPropagation();
+    
+    // ========================================================================
+    // MULTIVARIATE MODE: Use parallel pipeline
+    // ========================================================================
+    if (isMultivariate) {
+      const configsArray = Object.values(variableConfigs);
+      
+      // Validate all variables have target columns
+      const missingTargets = configsArray.filter(v => !v.targetColumn);
+      if (missingTargets.length > 0) {
+        alert(`Please select target columns for: ${missingTargets.map(v => v.filename).join(', ')}`);
+        return;
+      }
+
+      if (zoningEnabled && !data.connectedZoneFilename) {
+        alert("Please connect a zone dataset to use zoning, or disable zoning.");
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        const response = await fetch('http://localhost:8000/api/integrate_multivariate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            variables: configsArray.map(v => ({
+              dataset_path: v.filename,
+              target_column: v.targetColumn,
+              allocation_operator: v.allocation,
+              grid_aggregation_operator: v.aggregation,
+              zoning_mapping_operator: v.zoningMapping,
+              zoning_aggregation_operator: v.zoningAggregation
+            })),
+            zones_path: zoningEnabled ? data.connectedZoneFilename : null,
+            resolution: parseInt(resolution),
+            output_mode: outputMode
+          })
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          // Handle FastAPI validation errors (detail can be array or string)
+          const detail = Array.isArray(err.detail) 
+            ? err.detail.map(e => e.msg || e.message || JSON.stringify(e)).join('; ')
+            : (err.detail || 'Multivariate integration failed');
+          throw new Error(detail);
+        }
+
+        const resultData = await response.json();
+        resultData.isMultivariate = true;
+        resultData.isZoned = zoningEnabled;
+        resultData.outputMode = outputMode;
+
+        if (data.onIntegrationComplete) {
+          data.onIntegrationComplete(id, resultData);
+        }
+      } catch (error) {
+        console.error("Multivariate Pipeline Error:", error);
+        alert(`Error: ${error.message}`);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // ========================================================================
+    // SINGLE-VARIABLE MODE (legacy)
+    // ========================================================================
     if (!data.connectedDatasetFilename) {
       alert("Please connect a dataset node to the Integration Engine first.");
       return;
@@ -206,6 +340,8 @@ const IntegrationNode = memo(({ id, data }) => {
     }
   }, [
     id,
+    isMultivariate,
+    variableConfigs,
     data.connectedDatasetFilename,
     data.connectedZoneFilename,
     data.onIntegrationComplete,
@@ -295,63 +431,233 @@ const IntegrationNode = memo(({ id, data }) => {
       {/* 2. Controls Section */}
       <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         
-        {/* Source dataset status with geometry indicator */}
-        <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '6px', 
-            fontSize: '10px', 
-            padding: '6px', 
-            borderRadius: '4px',
-            backgroundColor: data.connectedDatasetFilename ? '#f0fdf4' : '#fffbeb',
-            color: data.connectedDatasetFilename ? '#15803d' : '#b45309',
-            border: `1px solid ${data.connectedDatasetFilename ? '#bbf7d0' : '#fde68a'}`
-        }}>
-            {data.connectedDatasetFilename ? <Link2 size={12} /> : <AlertCircle size={12} />}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                {data.connectedDatasetFilename ? `Source: ${data.connectedDatasetFilename}` : 'Connect source dataset...'}
-            </span>
-            {geometryType && (
-              <span style={{ 
-                backgroundColor: '#dbeafe', 
-                color: '#1d4ed8', 
-                padding: '1px 4px', 
-                borderRadius: '3px',
-                fontSize: '9px',
-                fontWeight: '600'
-              }}>
-                {geometryType}
-              </span>
-            )}
-        </div>
-
-        <label style={labelStyle}>
-          Target Column
-          <select 
-            value={targetColumn} 
-            onChange={e => setTargetColumn(e.target.value)}
-            className="nodrag"
-            style={{...inputStyle, cursor: 'pointer'}}
-            disabled={numericColumns.length === 0}
-          >
-            {numericColumns.length === 0 ? (
-              <option value="">Connect dataset first...</option>
-            ) : (
-              numericColumns.map(col => <option key={col} value={col}>{col}</option>)
-            )}
-          </select>
-        </label>
-
-        {/* Grid settings - show inline when no zoning, hide behind Advanced when zoning */}
-        {!zoningEnabled && (
+        {/* MULTIVARIATE MODE: Show Variable Cards */}
+        {isMultivariate ? (
           <>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '4px'
+            }}>
+              <span style={{ fontSize: '10px', color: '#6366f1', fontWeight: '600' }}>
+                📊 {connectedDatasets.length} Variables
+              </span>
+            </div>
+            
+            {/* Variable Cards */}
+            {connectedDatasets.map((dataset, idx) => {
+              const config = variableConfigs[dataset.id] || {};
+              const isExpanded = expandedCards[dataset.id];
+              const meta = dataset.metadata;
+              const geoType = meta?.geometricType || 'Polygon';
+              const cols = meta?.columns?.filter(c => 
+                ['Integer', 'Float', 'http://schema.org/Integer', 'http://schema.org/Float'].includes(c.structural_type) 
+                || (c.mean !== undefined)
+              ).map(c => c.name) || [];
+              
+              return (
+                <div 
+                  key={dataset.id}
+                  style={{
+                    border: '1px solid #c7d2fe',
+                    borderRadius: '6px',
+                    backgroundColor: '#f5f3ff',
+                    padding: '8px',
+                    fontSize: '10px'
+                  }}
+                >
+                  {/* Card Header */}
+                  <div 
+                    onClick={() => toggleCardExpand(dataset.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      marginBottom: isExpanded ? '8px' : 0
+                    }}
+                    className="nodrag"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ 
+                        backgroundColor: '#6366f1', 
+                        color: '#fff', 
+                        width: '16px', 
+                        height: '16px', 
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '9px',
+                        fontWeight: '600'
+                      }}>
+                        {idx + 1}
+                      </span>
+                      <span style={{ fontWeight: '600', color: '#4338ca', maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {dataset.filename}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ 
+                        backgroundColor: '#dbeafe', 
+                        color: '#1d4ed8', 
+                        padding: '1px 4px', 
+                        borderRadius: '3px',
+                        fontSize: '8px'
+                      }}>
+                        {geoType}
+                      </span>
+                      {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </div>
+                  </div>
+                  
+                  {/* Expanded Controls */}
+                  {isExpanded && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                        Target Column
+                        <select 
+                          value={config.targetColumn || ''}
+                          onChange={e => updateVariableConfig(dataset.id, { targetColumn: e.target.value })}
+                          className="nodrag"
+                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                        >
+                          <option value="">Select...</option>
+                          {cols.map(col => <option key={col} value={col}>{col}</option>)}
+                        </select>
+                      </label>
+                      
+                      <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                        Allocation
+                        <select 
+                          value={config.allocation || 'ProportionalAreaWeighted'}
+                          onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
+                          className="nodrag"
+                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                        >
+                          {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                        </select>
+                      </label>
+                      
+                      <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                        Aggregation
+                        <select 
+                          value={config.aggregation || 'SumAggregation'}
+                          onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
+                          className="nodrag"
+                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                        >
+                          {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                        </select>
+                      </label>
+                      
+                      {zoningEnabled && (
+                        <>
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px', color: '#047857'}}>
+                            Zone Mapping
+                            <select 
+                              value={config.zoningMapping || 'AreaWeightedZoning'}
+                              onChange={e => updateVariableConfig(dataset.id, { zoningMapping: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px', borderColor: '#6ee7b7'}}
+                            >
+                              {ZONING_MAPPING_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                          
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px', color: '#047857'}}>
+                            Zone Aggregation
+                            <select 
+                              value={config.zoningAggregation || 'SumZoning'}
+                              onChange={e => updateVariableConfig(dataset.id, { zoningAggregation: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px', borderColor: '#6ee7b7'}}
+                            >
+                              {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            
+            {/* Shared Resolution */}
             <label style={labelStyle}>
-              Allocation (R)
+              H3 Resolution (shared)
+              <input 
+                type="number" 
+                min="1" max="15"
+                value={resolution} 
+                onChange={e => setResolution(e.target.value)}
+                className="nodrag"
+                style={inputStyle}
+              />
+            </label>
+          </>
+        ) : (
+          /* SINGLE-VARIABLE MODE (legacy) */
+          <>
+            {/* Source dataset status with geometry indicator */}
+            <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                fontSize: '10px', 
+                padding: '6px', 
+                borderRadius: '4px',
+                backgroundColor: data.connectedDatasetFilename ? '#f0fdf4' : '#fffbeb',
+                color: data.connectedDatasetFilename ? '#15803d' : '#b45309',
+                border: `1px solid ${data.connectedDatasetFilename ? '#bbf7d0' : '#fde68a'}`
+            }}>
+                {data.connectedDatasetFilename ? <Link2 size={12} /> : <AlertCircle size={12} />}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                    {data.connectedDatasetFilename ? `Source: ${data.connectedDatasetFilename}` : 'Connect source dataset...'}
+                </span>
+                {geometryType && (
+                  <span style={{ 
+                    backgroundColor: '#dbeafe', 
+                    color: '#1d4ed8', 
+                    padding: '1px 4px', 
+                    borderRadius: '3px',
+                    fontSize: '9px',
+                    fontWeight: '600'
+                  }}>
+                    {geometryType}
+                  </span>
+                )}
+            </div>
+
+            <label style={labelStyle}>
+              Target Column
               <select 
-                value={allocation} 
-                onChange={e => setAllocation(e.target.value)}
-                className="nodrag" 
+                value={targetColumn} 
+                onChange={e => setTargetColumn(e.target.value)}
+                className="nodrag"
                 style={{...inputStyle, cursor: 'pointer'}}
+                disabled={numericColumns.length === 0}
+              >
+                {numericColumns.length === 0 ? (
+                  <option value="">Connect dataset first...</option>
+                ) : (
+                  numericColumns.map(col => <option key={col} value={col}>{col}</option>)
+                )}
+              </select>
+            </label>
+
+            {/* Grid settings - show inline when no zoning, hide behind Advanced when zoning */}
+            {!zoningEnabled && (
+              <>
+                <label style={labelStyle}>
+                  Allocation (R)
+                  <select 
+                    value={allocation} 
+                    onChange={e => setAllocation(e.target.value)}
+                    className="nodrag" 
+                    style={{...inputStyle, cursor: 'pointer'}}
               >
                 {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
               </select>
@@ -371,19 +677,22 @@ const IntegrationNode = memo(({ id, data }) => {
           </>
         )}
 
-        <label style={labelStyle}>
-          H3 Resolution
-          <input 
-            type="number" 
-            min="1" max="15"
-            value={resolution} 
-            onChange={e => setResolution(e.target.value)}
-            className="nodrag"
-            style={inputStyle}
-          />
-        </label>
+            <label style={labelStyle}>
+              H3 Resolution
+              <input 
+                type="number" 
+                min="1" max="15"
+                value={resolution} 
+                onChange={e => setResolution(e.target.value)}
+                className="nodrag"
+                style={inputStyle}
+              />
+            </label>
+          </>
+        )}
+        {/* END: Single vs Multi variable mode branching */}
 
-        {/* Zoning Section */}
+        {/* Zoning Section - Shared between both modes */}
         <div style={{
           marginTop: '4px',
           borderTop: '1px solid #e2e8f0',
@@ -421,7 +730,7 @@ const IntegrationNode = memo(({ id, data }) => {
             {zoningEnabled && (zoningExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
           </div>
 
-          {/* Zoning Controls */}
+          {/* Zoning Controls - Only zone dataset & output mode when multivariate (per-variable ops are in cards) */}
           {zoningEnabled && zoningExpanded && (
             <div style={{ 
               marginTop: '8px', 
@@ -449,29 +758,41 @@ const IntegrationNode = memo(({ id, data }) => {
                 </span>
               </div>
 
-              <label style={{...labelStyle, color: '#047857'}}>
-                Zone Mapping (Z_map)
-                <select 
-                  value={zoningMapping} 
-                  onChange={e => setZoningMapping(e.target.value)}
-                  className="nodrag" 
-                  style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
-                >
-                  {ZONING_MAPPING_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                </select>
-              </label>
+              {/* Single-variable mode: show zone mapping/aggregation controls */}
+              {!isMultivariate && (
+                <>
+                  <label style={{...labelStyle, color: '#047857'}}>
+                    Zone Mapping (Z_map)
+                    <select 
+                      value={zoningMapping} 
+                      onChange={e => setZoningMapping(e.target.value)}
+                      className="nodrag" 
+                      style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
+                    >
+                      {ZONING_MAPPING_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                    </select>
+                  </label>
 
-              <label style={{...labelStyle, color: '#047857'}}>
-                Zone Aggregation (A₂)
-                <select 
-                  value={zoningAggregation} 
-                  onChange={e => setZoningAggregation(e.target.value)}
-                  className="nodrag" 
-                  style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
-                >
-                  {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                </select>
-              </label>
+                  <label style={{...labelStyle, color: '#047857'}}>
+                    Zone Aggregation (A₂)
+                    <select 
+                      value={zoningAggregation} 
+                      onChange={e => setZoningAggregation(e.target.value)}
+                      className="nodrag" 
+                      style={{...inputStyle, cursor: 'pointer', borderColor: '#6ee7b7'}}
+                    >
+                      {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                    </select>
+                  </label>
+                </>
+              )}
+
+              {/* Multivariate mode: hint about per-variable settings */}
+              {isMultivariate && (
+                <div style={{ fontSize: '9px', color: '#047857', marginBottom: '8px', fontStyle: 'italic' }}>
+                  Zone operators configured per variable in cards above
+                </div>
+              )}
 
               <label style={{...labelStyle, color: '#047857'}}>
                 Output Mode
@@ -487,63 +808,75 @@ const IntegrationNode = memo(({ id, data }) => {
                 </select>
               </label>
 
-              {/* Advanced Settings - Grid step overrides */}
-              <div 
-                onClick={(e) => { e.stopPropagation(); setShowAdvanced(!showAdvanced); }}
-                className="nodrag"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  marginTop: '8px',
-                  paddingTop: '8px',
-                  borderTop: '1px dashed #6ee7b7',
-                  cursor: 'pointer',
-                  color: '#6b7280',
-                  fontSize: '9px'
-                }}
-              >
-                <Settings size={10} />
-                <span>Advanced (Grid Step)</span>
-                {showAdvanced ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-              </div>
-
-              {showAdvanced && (
-                <div style={{ marginTop: '6px', padding: '6px', backgroundColor: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '6px' }}>
-                    ⚡ Auto-set from geometry & zone aggregator
+              {/* Advanced Settings - Single-variable mode only */}
+              {!isMultivariate && (
+                <>
+                  <div 
+                    onClick={(e) => { e.stopPropagation(); setShowAdvanced(!showAdvanced); }}
+                    className="nodrag"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      marginTop: '8px',
+                      paddingTop: '8px',
+                      borderTop: '1px dashed #6ee7b7',
+                      cursor: 'pointer',
+                      color: '#6b7280',
+                      fontSize: '9px'
+                    }}
+                  >
+                    <Settings size={10} />
+                    <span>Advanced (Grid Step)</span>
+                    {showAdvanced ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
                   </div>
-                  <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
-                    Allocation (R)
-                    <select 
-                      value={allocation} 
-                      onChange={e => setAllocation(e.target.value)}
-                      className="nodrag" 
-                      style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
-                    >
-                      {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                    </select>
-                  </label>
-                  <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
-                    Grid Aggregation (A₁)
-                    <select 
-                      value={aggregation} 
-                      onChange={e => setAggregation(e.target.value)}
-                      className="nodrag" 
-                      style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
-                    >
-                      {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                    </select>
-                  </label>
-                </div>
+
+                  {showAdvanced && (
+                    <div style={{ marginTop: '6px', padding: '6px', backgroundColor: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ fontSize: '9px', color: '#64748b', marginBottom: '6px' }}>
+                        ⚡ Auto-set from geometry & zone aggregator
+                      </div>
+                      <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
+                        Allocation (R)
+                        <select 
+                          value={allocation} 
+                          onChange={e => setAllocation(e.target.value)}
+                          className="nodrag" 
+                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                        >
+                          {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                        </select>
+                      </label>
+                      <label style={{...labelStyle, fontSize: '9px', color: '#64748b'}}>
+                        Grid Aggregation (A₁)
+                        <select 
+                          value={aggregation} 
+                          onChange={e => setAggregation(e.target.value)}
+                          className="nodrag" 
+                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                        >
+                          {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
         </div>
 
+        {/* Execute Button - works for both modes */}
         <button 
           onClick={handleRun}
-          disabled={isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)}
+          disabled={
+            isLoading || 
+            (isMultivariate 
+              ? Object.values(variableConfigs).some(v => !v.targetColumn) 
+              : (!data.connectedDatasetFilename || !targetColumn)
+            ) || 
+            (zoningEnabled && !data.connectedZoneFilename)
+          }
           className="nodrag"
           style={{
             marginTop: '8px',
@@ -552,18 +885,32 @@ const IntegrationNode = memo(({ id, data }) => {
             alignItems: 'center',
             justifyContent: 'center',
             gap: '6px',
-            backgroundColor: (isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)) ? '#cbd5e1' : '#2563eb',
+            backgroundColor: (
+              isLoading || 
+              (isMultivariate 
+                ? Object.values(variableConfigs).some(v => !v.targetColumn) 
+                : (!data.connectedDatasetFilename || !targetColumn)
+              ) || 
+              (zoningEnabled && !data.connectedZoneFilename)
+            ) ? '#cbd5e1' : (isMultivariate ? '#6366f1' : '#2563eb'),
             color: '#fff',
             border: 'none',
             borderRadius: '4px',
             fontSize: '11px',
             fontWeight: '600',
-            cursor: (isLoading || !data.connectedDatasetFilename || !targetColumn || (zoningEnabled && !data.connectedZoneFilename)) ? 'not-allowed' : 'pointer',
+            cursor: (
+              isLoading || 
+              (isMultivariate 
+                ? Object.values(variableConfigs).some(v => !v.targetColumn) 
+                : (!data.connectedDatasetFilename || !targetColumn)
+              ) || 
+              (zoningEnabled && !data.connectedZoneFilename)
+            ) ? 'not-allowed' : 'pointer',
             transition: 'background-color 0.2s'
           }}
         >
           <Play size={12} fill="currentColor" />
-          {isLoading ? "Processing..." : "Execute Pipeline"}
+          {isLoading ? "Processing..." : (isMultivariate ? "Execute Multivariate Pipeline" : "Execute Pipeline")}
         </button>
       </div>
 

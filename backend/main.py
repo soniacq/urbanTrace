@@ -1,12 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Optional
 import geopandas as gpd
 import json
 import os
 
 # --- Imports for Formal Integration Engine ---
-from integration_engine import IntegrationPipeline, ZonedIntegrationPipeline
+from integration_engine import IntegrationPipeline, ZonedIntegrationPipeline, MultivariateIntegrationPipeline, VariableTrackConfig
 from grids.h3_grid import H3GridSystem
 
 from operators.allocation.binary import BinaryContainment, BinaryCentroidContainment, NearestAssignment
@@ -131,6 +132,30 @@ class ZonedIntegrationRequest(BaseModel):
     zones_path: str                # Reporting zones dataset filename
     resolution: int = 9            # H3 grid resolution
     output_mode: str = "zones"     # "grid" | "zones" | "both"
+
+
+class VariableConfigRequest(BaseModel):
+    """Configuration for a single variable in multivariate analysis."""
+    dataset_path: str              # Source dataset filename
+    target_column: str             # Attribute column to integrate
+    output_name: Optional[str] = None  # Column name in merged output (defaults to target_column)
+    allocation_operator: str       # R: spatial allocation method
+    grid_aggregation_operator: str # A_1: cell-level aggregation
+    zoning_mapping_operator: Optional[str] = None   # Z_map: cell-to-zone mapping
+    zoning_aggregation_operator: Optional[str] = None  # A_2: zone-level aggregation
+
+
+class MultivariateIntegrationRequest(BaseModel):
+    """
+    Payload for multivariate spatial analysis with parallel processing.
+    
+    Supports multiple datasets with independent mathematical rules,
+    merged into unified grid and/or zone output.
+    """
+    variables: List[VariableConfigRequest]  # List of variable configurations
+    zones_path: Optional[str] = None        # Optional reporting zones
+    resolution: int = 9                     # H3 grid resolution
+    output_mode: str = "grid"               # "grid" | "zones" | "both"
 
 
 # ==========================================
@@ -504,6 +529,157 @@ async def integrate_to_zones(request: ZonedIntegrationRequest):
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Zoned integration failed: {str(e)}")
+
+
+# ==========================================
+# 7. MULTIVARIATE INTEGRATION ENDPOINT (Parallel Tracks + Dual-Merge)
+# ==========================================
+
+@app.post("/api/integrate_multivariate")
+async def integrate_multivariate(request: MultivariateIntegrationRequest):
+    """
+    Executes multivariate spatial analysis with parallel processing.
+    
+    Each variable is processed through its own mathematical pipeline,
+    then merged into a unified grid and/or zone output.
+    
+    Architecture:
+    - Step 1: Parallel Source → Grid (each variable uses its own R + A_1)
+    - Step 1.5: Merge on cell_id → Unified Grid
+    - Step 2: Parallel Grid → Zone (each variable uses its own Z_map + A_2)
+    - Step 3: Merge on zone_id → Unified Zones
+    """
+    try:
+        if not request.variables:
+            raise HTTPException(status_code=400, detail="At least one variable is required")
+        
+        # Build track configurations
+        tracks = []
+        
+        for var in request.variables:
+            # Validate operators
+            if var.allocation_operator not in ALLOCATION_REGISTRY:
+                raise HTTPException(status_code=400, detail=f"Unknown allocation operator: {var.allocation_operator}")
+            if var.grid_aggregation_operator not in AGGREGATION_REGISTRY:
+                raise HTTPException(status_code=400, detail=f"Unknown grid aggregation operator: {var.grid_aggregation_operator}")
+            
+            # Load source dataset
+            source_path = os.path.join(DATA_DIR, "geojson", var.dataset_path)
+            try:
+                source_gdf = gpd.read_file(source_path)
+            except Exception as e:
+                raise HTTPException(status_code=404, detail=f"Could not load {var.dataset_path}: {str(e)}")
+            
+            # Validate allocation operator against geometry
+            geom_types = source_gdf.geometry.geom_type.unique()
+            for geom_type in geom_types:
+                if geom_type in GEOMETRY_CONSTRAINTS:
+                    allowed = GEOMETRY_CONSTRAINTS[geom_type]
+                    if var.allocation_operator not in allowed:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Operator '{var.allocation_operator}' not valid for {geom_type} in {var.dataset_path}"
+                        )
+            
+            # Build operators
+            allocator = ALLOCATION_REGISTRY[var.allocation_operator]()
+            grid_aggregator = AGGREGATION_REGISTRY[var.grid_aggregation_operator]()
+            
+            # Optional zoning operators
+            zoning_mapper = None
+            zoning_aggregator = None
+            
+            if var.zoning_mapping_operator and var.zoning_aggregation_operator:
+                if var.zoning_mapping_operator not in ZONING_MAPPING_REGISTRY:
+                    raise HTTPException(status_code=400, detail=f"Unknown zoning mapping operator: {var.zoning_mapping_operator}")
+                if var.zoning_aggregation_operator not in ZONING_AGGREGATION_REGISTRY:
+                    raise HTTPException(status_code=400, detail=f"Unknown zoning aggregation operator: {var.zoning_aggregation_operator}")
+                
+                zoning_mapper = ZONING_MAPPING_REGISTRY[var.zoning_mapping_operator]()
+                zoning_aggregator = ZONING_AGGREGATION_REGISTRY[var.zoning_aggregation_operator]()
+            
+            # Create track config (default output_name to target_column)
+            track = VariableTrackConfig(
+                source_gdf=source_gdf,
+                target_column=var.target_column,
+                output_name=var.output_name or var.target_column,
+                allocator=allocator,
+                grid_aggregator=grid_aggregator,
+                zoning_mapper=zoning_mapper,
+                zoning_aggregator=zoning_aggregator
+            )
+            tracks.append(track)
+        
+        # Load zones if provided
+        zones_gdf = None
+        if request.zones_path:
+            zones_path = os.path.join(DATA_DIR, "geojson", request.zones_path)
+            try:
+                zones_gdf = gpd.read_file(zones_path)
+            except Exception as e:
+                raise HTTPException(status_code=404, detail=f"Could not load zones: {str(e)}")
+        
+        # Execute multivariate pipeline
+        grid = H3GridSystem()
+        pipeline = MultivariateIntegrationPipeline(grid_system=grid)
+        
+        result = pipeline.run(
+            tracks=tracks,
+            resolution=request.resolution,
+            zones_gdf=zones_gdf,
+            output_mode=request.output_mode
+        )
+        
+        # Build response
+        response = {
+            "status": "success",
+            "operation": "multivariate_integration",
+            "resolution": request.resolution,
+            "variables": [v.output_name or v.target_column for v in request.variables]
+        }
+        
+        # Convert grid output
+        if 'grid' in result:
+            grid_gdf = result['grid']
+            df_no_geom = grid_gdf.drop(columns=['geometry'])
+            final_hex_data = {}
+            
+            # Get variable names for this request
+            var_names = [(v.output_name or v.target_column) for v in request.variables]
+            
+            for _, row in df_no_geom.iterrows():
+                row_dict = row.to_dict()
+                cell_id = row_dict.pop('cell_id', None)
+                if not cell_id:
+                    continue
+                
+                # Get all variable values
+                var_values = {name: row_dict.get(name, 0) for name in var_names}
+                
+                # Use sum of variable values for visualization intensity
+                total_value = sum(var_values.values())
+                
+                final_hex_data[cell_id] = {
+                    "count": total_value,
+                    "variables": var_values,
+                    "sample_props": row_dict
+                }
+            
+            response["data"] = final_hex_data
+            response["hex_count"] = len(final_hex_data)
+        
+        # Convert zones output
+        if 'zones' in result:
+            zones_gdf = result['zones']
+            response["geojson"] = json.loads(zones_gdf.to_json())
+            response["zone_count"] = len(zones_gdf)
+        
+        return response
+        
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Multivariate integration failed: {str(e)}")
 
 
 @app.get("/api/operators")

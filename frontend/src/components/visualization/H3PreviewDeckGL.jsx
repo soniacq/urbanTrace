@@ -42,36 +42,67 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
     }));
   };
 
-  const { data, maxCount } = useMemo(() => {
+  const { data, maxCount, variableNames } = useMemo(() => {
     if (!hexData) {
       console.log("Warning: No hexData provided to H3PreviewDeckGL. DeckGL will render an empty map.");
-      return { data: [], maxCount: 1 };
+      return { data: [], maxCount: 1, variableNames: [] };
     }
     let max = 1;
+    let varNames = new Set();
+    
     const parsedData = Object.entries(hexData).map(([hexId, info]) => {
-      if (info.count > max) max = info.count; 
+      if (info.count > max) max = info.count;
+      
+      // Track variable names from multivariate data
+      if (info.variables) {
+        Object.keys(info.variables).forEach(name => varNames.add(name));
+      }
+      
       return {
         hex: hexId,
         count: info.count,
+        variables: info.variables || {},
         sources: info.sources || [],
         props: info.sample_props || {}
       };
     });
     
-    return { data: parsedData, maxCount: max };
+    return { data: parsedData, maxCount: max, variableNames: [...varNames] };
   }, [hexData]);
 
-  // Process GeoJSON zone data
-  const { zoneFeatures, maxZoneValue } = useMemo(() => {
+  // Process GeoJSON zone data (handles both single-variable zone_value and multivariate columns)
+  const { zoneFeatures, maxZoneValue, zoneVariableNames } = useMemo(() => {
     if (!geojsonData?.features) {
-      return { zoneFeatures: null, maxZoneValue: 1 };
+      return { zoneFeatures: null, maxZoneValue: 1, zoneVariableNames: [] };
     }
+    
     let max = 1;
+    let varNames = new Set();
+    
+    // Detect variable names (any numeric property that isn't zone_id or geometry-related)
+    const excludeProps = ['zone_id', 'geometry', 'OBJECTID', 'Shape_Area', 'Shape_Leng'];
+    
     geojsonData.features.forEach(f => {
-      const val = f.properties?.zone_value || 0;
-      if (val > max) max = val;
+      const props = f.properties || {};
+      
+      // Sum all numeric variable values for intensity
+      let totalVal = 0;
+      Object.entries(props).forEach(([key, val]) => {
+        if (!excludeProps.includes(key) && typeof val === 'number' && !isNaN(val)) {
+          varNames.add(key);
+          totalVal += val;
+        }
+      });
+      
+      // Track max for color intensity
+      if (props.zone_value !== undefined) {
+        if (props.zone_value > max) max = props.zone_value;
+      } else if (totalVal > max) {
+        max = totalVal;
+      }
     });
-    return { zoneFeatures: geojsonData, maxZoneValue: max };
+    
+    return { zoneFeatures: geojsonData, maxZoneValue: max, zoneVariableNames: [...varNames] };
   }, [geojsonData]);
 
   const layers = useMemo(() => {
@@ -101,6 +132,9 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
 
     // GeoJSON Zone Layer (if showing zones)
     if (showZones && zoneFeatures) {
+      // Preprocess to compute total value per zone for multivariate
+      const excludeProps = ['zone_id', 'geometry', 'OBJECTID', 'Shape_Area', 'Shape_Leng'];
+      
       result.push(
         new GeoJsonLayer({
           id: 'zone-layer',
@@ -112,15 +146,35 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
           wireframe: is3D,
           lineWidthMinPixels: 1,
           getFillColor: f => {
-            const val = f.properties?.zone_value || 0;
-            const intensity = maxZoneValue > 0 ? (val / maxZoneValue) : 0;
+            const props = f.properties || {};
+            // Sum all variable values for intensity
+            let totalVal = props.zone_value || 0;
+            if (!props.zone_value) {
+              Object.entries(props).forEach(([key, val]) => {
+                if (!excludeProps.includes(key) && typeof val === 'number' && !isNaN(val)) {
+                  totalVal += val;
+                }
+              });
+            }
+            const intensity = maxZoneValue > 0 ? (totalVal / maxZoneValue) : 0;
             // Use a different color scheme for zones (green)
             const alpha = is3D ? 180 : Math.floor(60 + (140 * intensity));
             return [16, 185, 129, alpha]; // Emerald green
           },
           getLineColor: [15, 118, 110, 200], // Teal border
           getLineWidth: 2,
-          getElevation: f => (f.properties?.zone_value || 0) * 10,
+          getElevation: f => {
+            const props = f.properties || {};
+            let totalVal = props.zone_value || 0;
+            if (!props.zone_value) {
+              Object.entries(props).forEach(([key, val]) => {
+                if (!excludeProps.includes(key) && typeof val === 'number' && !isNaN(val)) {
+                  totalVal += val;
+                }
+              });
+            }
+            return totalVal * 10;
+          },
           elevationScale: is3D ? 50 : 0
         })
       );
@@ -167,13 +221,23 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
             
             // Handle H3 hexagon tooltip
             if (layer?.id === 'h3-hexagon-layer') {
+              // Build variable values display for multivariate
+              let variablesHtml = '';
+              if (object.variables && Object.keys(object.variables).length > 0) {
+                variablesHtml = Object.entries(object.variables)
+                  .map(([name, val]) => `<div><strong>${name}:</strong> ${typeof val === 'number' ? val.toFixed(2) : val}</div>`)
+                  .join('');
+              } else {
+                variablesHtml = `<div><strong>Value:</strong> ${object.count}</div>`;
+              }
+              
               return {
                 html: `
                   <div style="font-family: sans-serif;">
                     <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
                       Hex ID: ${object.hex.slice(0, 8)}...
                     </div>
-                    <div><strong>Value:</strong> ${object.count}</div>
+                    ${variablesHtml}
                     ${object.sources?.length ? `<div style="margin-top: 4px;"><strong>Sources:</strong> ${object.sources.join(', ')}</div>` : ''}
                   </div>
                 `,
@@ -184,7 +248,7 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
                   padding: '8px',
                   borderRadius: '6px',
                   boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
-                  maxWidth: '220px',
+                  maxWidth: '250px',
                   border: '1px solid #334155'
                 }
               };
@@ -193,13 +257,33 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
             // Handle Zone polygon tooltip
             if (layer?.id === 'zone-layer' && object.properties) {
               const props = object.properties;
+              const excludeProps = ['zone_id', 'geometry', 'OBJECTID', 'Shape_Area', 'Shape_Leng'];
+              
+              // Build variables display for multivariate zones
+              let variablesHtml = '';
+              if (props.zone_value !== undefined) {
+                variablesHtml = `<div><strong>Value:</strong> ${props.zone_value?.toFixed(2) || 'N/A'}</div>`;
+              } else {
+                // Show all numeric variables
+                const varEntries = Object.entries(props)
+                  .filter(([key, val]) => !excludeProps.includes(key) && typeof val === 'number' && !isNaN(val));
+                
+                if (varEntries.length > 0) {
+                  variablesHtml = varEntries
+                    .map(([name, val]) => `<div><strong>${name}:</strong> ${val.toFixed(2)}</div>`)
+                    .join('');
+                } else {
+                  variablesHtml = '<div>No values</div>';
+                }
+              }
+              
               return {
                 html: `
                   <div style="font-family: sans-serif;">
                     <div style="font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #475569; padding-bottom: 4px;">
                       Zone: ${props.zone_id || 'Unknown'}
                     </div>
-                    <div><strong>Value:</strong> ${props.zone_value?.toFixed(2) || 'N/A'}</div>
+                    ${variablesHtml}
                   </div>
                 `,
                 style: {
@@ -209,7 +293,7 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
                   padding: '8px',
                   borderRadius: '6px',
                   boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
-                  maxWidth: '220px',
+                  maxWidth: '250px',
                   border: '1px solid #10b981'
                 }
               };

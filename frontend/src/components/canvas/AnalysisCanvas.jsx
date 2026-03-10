@@ -106,13 +106,32 @@ const CanvasInner = () => {
                 }
               };
             } else {
-              // Source dataset connection (default "source" handle)
+              // Source dataset connection - MULTIVARIATE SUPPORT
+              // Accumulate datasets into an array for Variable Cards
+              const existingDatasets = node.data.connectedDatasets || [];
+              const newDataset = {
+                id: `var_${Date.now()}`,
+                nodeId: sourceNode.id,
+                filename: sourceNode.data.filename,
+                metadata: sourceNode.data.metadata
+              };
+              
+              // Check if this dataset is already connected
+              const alreadyConnected = existingDatasets.some(d => d.nodeId === sourceNode.id);
+              
+              if (alreadyConnected) {
+                return node; // Don't add duplicate
+              }
+              
               return {
                 ...node,
                 data: {
                   ...node.data,
+                  // Keep legacy single-dataset fields for backward compatibility
                   connectedDatasetFilename: sourceNode.data.filename,
-                  connectedDatasetMetadata: sourceNode.data.metadata
+                  connectedDatasetMetadata: sourceNode.data.metadata,
+                  // NEW: Array of all connected datasets for multivariate
+                  connectedDatasets: [...existingDatasets, newDataset]
                 }
               };
             }
