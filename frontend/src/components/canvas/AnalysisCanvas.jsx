@@ -109,11 +109,17 @@ const CanvasInner = () => {
               // Source dataset connection - MULTIVARIATE SUPPORT
               // Accumulate datasets into an array for Variable Cards
               const existingDatasets = node.data.connectedDatasets || [];
+              
+              // CONTEXTUAL STATE INHERITANCE:
+              // Pass upstream node's selected column to pre-populate Variable Card
+              const inheritedColumn = sourceNode.data.selectedColumn || '';
+              
               const newDataset = {
                 id: `var_${Date.now()}`,
                 nodeId: sourceNode.id,
                 filename: sourceNode.data.filename,
-                metadata: sourceNode.data.metadata
+                metadata: sourceNode.data.metadata,
+                inheritedColumn: inheritedColumn  // Pass selected column downstream
               };
               
               // Check if this dataset is already connected
@@ -147,6 +153,25 @@ const CanvasInner = () => {
     setViewingDataset(nodeData); 
   }, []);
 
+  // CONTEXTUAL STATE INHERITANCE:
+  // Factory to create column-select callback for each DatasetNode
+  const createColumnSelectHandler = useCallback((nodeId) => {
+    return (selectedColumn) => {
+      setNodes((nds) => nds.map((node) => {
+        if (node.id === nodeId) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              selectedColumn: selectedColumn
+            }
+          };
+        }
+        return node;
+      }));
+    };
+  }, [setNodes]);
+
   const onDragOver = useCallback((event) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
@@ -163,6 +188,7 @@ const CanvasInner = () => {
 
       // Determine type dynamically based on what was dragged from the sidebar
       const newNodeType = dataItem.type || 'datasetNode';
+      const nodeId = `node_${Date.now()}`;
       let newNodeData = { ...dataItem };
 
       // 5. Inject specific handlers based on the node type
@@ -172,11 +198,13 @@ const CanvasInner = () => {
           // Inject the callback so the node can talk back to the canvas when the API finishes
           newNodeData.onIntegrationComplete = handleIntegrationComplete;
       } else {
+          // DatasetNode: inject column select callback for state inheritance
           newNodeData.onShowInfo = handleShowInfo;
+          newNodeData.onColumnSelect = createColumnSelectHandler(nodeId);
       }
 
       const newNode = {
-        id: `node_${Date.now()}`,
+        id: nodeId,
         type: newNodeType, 
         position,
         data: newNodeData,
@@ -184,7 +212,7 @@ const CanvasInner = () => {
 
       setNodes((nds) => nds.concat(newNode));
     },
-    [screenToFlowPosition, handleShowInfo, handleIntegrationComplete]
+    [screenToFlowPosition, handleShowInfo, handleIntegrationComplete, createColumnSelectHandler]
   );
 
   return (

@@ -10,7 +10,16 @@ const DatasetNode = memo(({ data }) => {
   const name = meta.name || data.name || 'Untitled';
   const filename = data.filename || name + '.geojson';
   
-  const [selectedCol, setSelectedCol] = useState("");
+  // Initialize from data if available (for state persistence)
+  const [selectedCol, setSelectedCol] = useState(data.selectedColumn || "");
+  
+  // Notify parent when column selection changes
+  const handleColumnChange = (col) => {
+    setSelectedCol(col);
+    if (data.onColumnSelect) {
+      data.onColumnSelect(col);
+    }
+  };
 
   const numericColumns = columns.filter(c => 
     ['Integer', 'Float', 'http://schema.org/Integer', 'http://schema.org/Float'].includes(c.structural_type) 
@@ -97,7 +106,7 @@ const DatasetNode = memo(({ data }) => {
             </label>
             <select 
                 value={selectedCol} 
-                onChange={(e) => setSelectedCol(e.target.value)}
+                onChange={(e) => handleColumnChange(e.target.value)}
                 className="nodrag" 
                 style={{
                     flexGrow: 1, 

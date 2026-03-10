@@ -74,6 +74,7 @@ const IntegrationNode = memo(({ id, data }) => {
   // ==========================================================================
   const [variableConfigs, setVariableConfigs] = useState({});
   const [expandedCards, setExpandedCards] = useState({});
+  const [advancedExpanded, setAdvancedExpanded] = useState({}); // Track advanced section per card
   
   // Check if we're in multivariate mode (multiple datasets connected)
   const connectedDatasets = data.connectedDatasets || [];
@@ -94,12 +95,16 @@ const IntegrationNode = memo(({ id, data }) => {
     
     connectedDatasets.forEach(dataset => {
       if (!newConfigs[dataset.id]) {
+        // CONTEXTUAL STATE INHERITANCE:
+        // Pre-populate targetColumn from upstream node's selection
+        const inheritedColumn = dataset.inheritedColumn || '';
+        
         newConfigs[dataset.id] = {
           id: dataset.id,
           nodeId: dataset.nodeId,
           filename: dataset.filename,
           metadata: dataset.metadata,
-          targetColumn: '',
+          targetColumn: inheritedColumn,  // Smart default from upstream
           allocation: GEOMETRY_TO_ALLOCATION[dataset.metadata?.geometricType] || 'ProportionalAreaWeighted',
           aggregation: 'SumAggregation',
           zoningMapping: 'AreaWeightedZoning',
@@ -142,6 +147,14 @@ const IntegrationNode = memo(({ id, data }) => {
   // Toggle card expansion
   const toggleCardExpand = useCallback((varId) => {
     setExpandedCards(prev => ({
+      ...prev,
+      [varId]: !prev[varId]
+    }));
+  }, []);
+
+  // Toggle advanced grid settings per card
+  const toggleAdvancedExpand = useCallback((varId) => {
+    setAdvancedExpanded(prev => ({
       ...prev,
       [varId]: !prev[varId]
     }));
@@ -512,9 +525,10 @@ const IntegrationNode = memo(({ id, data }) => {
                     </div>
                   </div>
                   
-                  {/* Expanded Controls */}
+                  {/* Expanded Controls - Outcome-Driven Progressive Disclosure */}
                   {isExpanded && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {/* Primary: Target Column (always visible) */}
                       <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
                         Target Column
                         <select 
@@ -528,34 +542,11 @@ const IntegrationNode = memo(({ id, data }) => {
                         </select>
                       </label>
                       
-                      <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
-                        Allocation
-                        <select 
-                          value={config.allocation || 'ProportionalAreaWeighted'}
-                          onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
-                          className="nodrag"
-                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
-                        >
-                          {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                        </select>
-                      </label>
-                      
-                      <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
-                        Aggregation
-                        <select 
-                          value={config.aggregation || 'SumAggregation'}
-                          onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
-                          className="nodrag"
-                          style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
-                        >
-                          {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                        </select>
-                      </label>
-                      
+                      {/* Primary Outcome Settings (when zoning enabled) */}
                       {zoningEnabled && (
                         <>
                           <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px', color: '#047857'}}>
-                            Zone Mapping
+                            Boundary Math (Z_map)
                             <select 
                               value={config.zoningMapping || 'AreaWeightedZoning'}
                               onChange={e => updateVariableConfig(dataset.id, { zoningMapping: e.target.value })}
@@ -567,16 +558,114 @@ const IntegrationNode = memo(({ id, data }) => {
                           </label>
                           
                           <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px', color: '#047857'}}>
-                            Zone Aggregation
+                            Final Math (A₂)
                             <select 
                               value={config.zoningAggregation || 'SumZoning'}
-                              onChange={e => updateVariableConfig(dataset.id, { zoningAggregation: e.target.value })}
+                              onChange={e => {
+                                // Reverse-sync: auto-set grid aggregation based on zone aggregation
+                                const newZoneAgg = e.target.value;
+                                const gridAgg = ZONE_TO_GRID_AGGREGATION[newZoneAgg] || 'SumAggregation';
+                                updateVariableConfig(dataset.id, { 
+                                  zoningAggregation: newZoneAgg,
+                                  aggregation: gridAgg  // Auto-sync grid aggregation
+                                });
+                              }}
                               className="nodrag"
                               style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px', borderColor: '#6ee7b7'}}
                             >
                               {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
                             </select>
                           </label>
+                        </>
+                      )}
+                      
+                      {/* Grid-only mode: show allocation & aggregation directly */}
+                      {!zoningEnabled && (
+                        <>
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                            Allocation
+                            <select 
+                              value={config.allocation || 'ProportionalAreaWeighted'}
+                              onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                            >
+                              {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                          
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                            Aggregation
+                            <select 
+                              value={config.aggregation || 'SumAggregation'}
+                              onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                            >
+                              {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      
+                      {/* Advanced Grid Configuration (Progressive Disclosure) */}
+                      {zoningEnabled && (
+                        <>
+                          <div 
+                            onClick={(e) => { e.stopPropagation(); toggleAdvancedExpand(dataset.id); }}
+                            className="nodrag"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              marginTop: '4px',
+                              paddingTop: '6px',
+                              borderTop: '1px dashed #c7d2fe',
+                              cursor: 'pointer',
+                              color: '#6b7280',
+                              fontSize: '8px'
+                            }}
+                          >
+                            <Settings size={9} />
+                            <span>Advanced Grid Config</span>
+                            {advancedExpanded[dataset.id] ? <ChevronUp size={9} /> : <ChevronDown size={9} />}
+                          </div>
+                          
+                          {advancedExpanded[dataset.id] && (
+                            <div style={{ 
+                              padding: '6px', 
+                              backgroundColor: '#f8fafc', 
+                              borderRadius: '4px', 
+                              border: '1px solid #e2e8f0',
+                              marginTop: '4px'
+                            }}>
+                              <div style={{ fontSize: '8px', color: '#64748b', marginBottom: '4px' }}>
+                                ⚡ Auto-synced from Final Math
+                              </div>
+                              <label style={{...labelStyle, marginBottom: '4px', fontSize: '8px', color: '#64748b'}}>
+                                Grid Allocation
+                                <select 
+                                  value={config.allocation || 'ProportionalAreaWeighted'}
+                                  onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
+                                  className="nodrag"
+                                  style={{...inputStyle, cursor: 'pointer', fontSize: '9px', height: '20px'}}
+                                >
+                                  {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                                </select>
+                              </label>
+                              <label style={{...labelStyle, marginBottom: '0', fontSize: '8px', color: '#64748b'}}>
+                                Grid Aggregation
+                                <select 
+                                  value={config.aggregation || 'SumAggregation'}
+                                  onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
+                                  className="nodrag"
+                                  style={{...inputStyle, cursor: 'pointer', fontSize: '9px', height: '20px'}}
+                                >
+                                  {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                                </select>
+                              </label>
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
@@ -790,7 +879,7 @@ const IntegrationNode = memo(({ id, data }) => {
               {/* Multivariate mode: hint about per-variable settings */}
               {isMultivariate && (
                 <div style={{ fontSize: '9px', color: '#047857', marginBottom: '8px', fontStyle: 'italic' }}>
-                  Zone operators configured per variable in cards above
+                  ✓ Per-variable math configured in cards above
                 </div>
               )}
 
