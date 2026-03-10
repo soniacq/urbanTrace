@@ -260,6 +260,24 @@ const IntegrationNode = memo(({ id, data }) => {
         resultData.isZoned = zoningEnabled;
         resultData.outputMode = outputMode;
 
+        // DATA LINEAGE: Capture configuration snapshot for provenance tracking
+        resultData.provenance = {
+          timestamp: new Date().toISOString(),
+          isMultivariate: true,
+          resolution: parseInt(resolution),
+          zoningEnabled: zoningEnabled,
+          targetZones: zoningEnabled ? data.connectedZoneFilename : null,
+          outputMode: outputMode,
+          variables: configsArray.map(v => ({
+            dataset: v.filename,
+            targetColumn: v.targetColumn,
+            allocation: v.allocation,
+            aggregation: v.aggregation,
+            zoningMapping: v.zoningMapping,
+            zoningAggregation: v.zoningAggregation
+          }))
+        };
+
         if (data.onIntegrationComplete) {
           data.onIntegrationComplete(id, resultData);
         }
@@ -340,6 +358,24 @@ const IntegrationNode = memo(({ id, data }) => {
         resultData = await response.json();
         resultData.isZoned = false;
       }
+
+      // DATA LINEAGE: Capture configuration snapshot for provenance tracking
+      resultData.provenance = {
+        timestamp: new Date().toISOString(),
+        isMultivariate: false,
+        resolution: parseInt(resolution),
+        zoningEnabled: zoningEnabled,
+        targetZones: zoningEnabled ? data.connectedZoneFilename : null,
+        outputMode: zoningEnabled ? outputMode : 'grid',
+        variables: [{
+          dataset: data.connectedDatasetFilename,
+          targetColumn: targetColumn,
+          allocation: allocation,
+          aggregation: aggregation,
+          zoningMapping: zoningEnabled ? zoningMapping : null,
+          zoningAggregation: zoningEnabled ? zoningAggregation : null
+        }]
+      };
 
       if (data.onIntegrationComplete) {
         data.onIntegrationComplete(id, resultData);

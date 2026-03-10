@@ -1,9 +1,13 @@
-import React, { memo, useMemo, useEffect } from 'react';
+import React, { memo, useMemo, useEffect, useState } from 'react';
 import { Handle, Position, NodeResizeControl } from '@xyflow/react';
-import { Map as MapIcon, Download, Hexagon, MapPin } from 'lucide-react';
+import { Map as MapIcon, Download, Hexagon, MapPin, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import H3PreviewDeckGL from '../../visualization/H3PreviewDeckGL'; 
 
 const ResultMapNode = memo(({ id, data }) => {
+  // DATA LINEAGE: Track lineage panel visibility
+  const [lineageExpanded, setLineageExpanded] = useState(false);
+  const provenance = data?.spatialData?.provenance;
+  
   // Check if this is a zoned result
   const isZoned = data?.spatialData?.isZoned;
   const outputMode = data?.spatialData?.outputMode || 'grid';
@@ -93,25 +97,131 @@ const ResultMapNode = memo(({ id, data }) => {
          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', fontWeight: 'bold' }}>
            <HeaderIcon size={14} /> {nodeTitle}
          </div>
-         {/* Output mode badge */}
-         {isZoned && (
-           <div style={{
-             fontSize: '9px',
-             backgroundColor: 'rgba(255,255,255,0.2)',
-             padding: '2px 6px',
-             borderRadius: '4px',
-             textTransform: 'uppercase'
-           }}>
-             {outputMode}
-           </div>
-         )}
+         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+           {/* Output mode badge */}
+           {isZoned && (
+             <div style={{
+               fontSize: '9px',
+               backgroundColor: 'rgba(255,255,255,0.2)',
+               padding: '2px 6px',
+               borderRadius: '4px',
+               textTransform: 'uppercase'
+             }}>
+               {outputMode}
+             </div>
+           )}
+           {/* DATA LINEAGE: Info toggle button */}
+           {provenance && (
+             <button
+               onClick={() => setLineageExpanded(!lineageExpanded)}
+               className="nodrag"
+               style={{
+                 background: 'rgba(255,255,255,0.2)',
+                 border: 'none',
+                 borderRadius: '4px',
+                 padding: '2px 4px',
+                 cursor: 'pointer',
+                 display: 'flex',
+                 alignItems: 'center',
+                 gap: '2px'
+               }}
+               title="View data lineage"
+             >
+               <Info size={12} />
+               {lineageExpanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+             </button>
+           )}
+         </div>
        </div>
 
-      {/* Preview Area (Unchanged) */}
-      {/* 👇 4. Change Preview Area to Flex-Grow instead of fixed height */}
+       {/* DATA LINEAGE: Compact Pipeline Badge Panel */}
+        {provenance && lineageExpanded && (
+          <div className="nodrag" style={{
+            backgroundColor: '#f8fafc',
+            padding: '10px',
+            fontSize: '10px',
+            color: '#334155',
+            borderBottom: '1px solid #e2e8f0',
+            maxHeight: '180px',
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+          }}>
+            {/* Header & Meta */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '4px' }}>
+              <span style={{ fontWeight: '600', color: '#0f172a' }}>📊 Data Lineage</span>
+              <span style={{ fontSize: '8px', color: '#64748b' }}>
+                {new Date(provenance.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+
+            {/* Global Settings Badges */}
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+              <span style={{ backgroundColor: '#e0e7ff', color: '#3730a3', padding: '2px 6px', borderRadius: '4px', fontSize: '9px', fontWeight: '600' }}>
+                H3 Res {provenance.resolution}
+              </span>
+              {provenance.zoningEnabled && provenance.targetZones && (
+                <span style={{ backgroundColor: '#dcfce7', color: '#166534', padding: '2px 6px', borderRadius: '4px', fontSize: '9px', fontWeight: '600' }}>
+                  Zones: {provenance.targetZones.replace(/^.*[\/]/, '')}
+                </span>
+              )}
+            </div>
+
+            {/* Variables Sequence */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {provenance.variables?.map((v, i) => (
+                <div key={i} style={{
+                  backgroundColor: '#fff',
+                  padding: '6px',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}>
+                  {/* Var Header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: '700', color: '#0f172a', fontSize: '10px' }}>
+                      {v.targetColumn}
+                    </span>
+                    <span style={{ fontSize: '8px', color: '#64748b', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.dataset}>
+                      {v.dataset?.replace(/^.*[\/]/, '')}
+                    </span>
+                  </div>
+
+                  {/* Pipeline Operator Badges (with smart string truncation) */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+                    {/* Grid Operators (Blue-ish) */}
+                    <span style={{ backgroundColor: '#f1f5f9', color: '#475569', padding: '2px 4px', borderRadius: '3px', fontSize: '8px', border: '1px solid #e2e8f0' }} title={`Allocation: ${v.allocation}`}>
+                      {v.allocation?.replace('Proportional', 'Prop.').replace('Weighted', 'Wt.')}
+                    </span>
+                    <span style={{ backgroundColor: '#f1f5f9', color: '#475569', padding: '2px 4px', borderRadius: '3px', fontSize: '8px', border: '1px solid #e2e8f0' }} title={`Grid Aggregation: ${v.aggregation}`}>
+                      {v.aggregation?.replace('Aggregation', 'Agg')}
+                    </span>
+
+                    {/* Zone Operators (Green-ish) - Only show if zoning is active */}
+                    {v.zoningMapping && (
+                      <span style={{ backgroundColor: '#f0fdf4', color: '#15803d', padding: '2px 4px', borderRadius: '3px', fontSize: '8px', border: '1px solid #bbf7d0' }} title={`Zone Mapping: ${v.zoningMapping}`}>
+                        {v.zoningMapping?.replace('Zoning', 'Map')}
+                      </span>
+                    )}
+                    {v.zoningAggregation && (
+                      <span style={{ backgroundColor: '#f0fdf4', color: '#15803d', padding: '2px 4px', borderRadius: '3px', fontSize: '8px', border: '1px solid #bbf7d0' }} title={`Zone Aggregation: ${v.zoningAggregation}`}>
+                        {v.zoningAggregation?.replace('Zoning', 'Agg')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+      {/* Preview Area */}
       <div style={{ 
         flexGrow: 1, 
-        height: '100%',       // 👈 ADD THIS
+        height: '100%',
         minHeight: '160px', 
         backgroundColor: '#f8fafc',
         position: 'relative',
