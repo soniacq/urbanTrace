@@ -10,6 +10,11 @@ const DatasetNode = memo(({ data }) => {
   const name = meta.name || data.name || 'Untitled';
   const filename = data.filename || name + '.geojson';
   
+  // GLOBAL VIEWPORT SYNC: Extract sync props from data
+  const isMapSyncEnabled = data.isMapSyncEnabled || false;
+  const globalViewState = data.globalViewState;
+  const onGlobalViewStateChange = data.onGlobalViewStateChange;
+  
   // Initialize from data if available (for state persistence)
   const [selectedCol, setSelectedCol] = useState(data.selectedColumn || "");
   
@@ -94,7 +99,13 @@ const DatasetNode = memo(({ data }) => {
       </div>
 
       {/* 2. Map Preview */}
-      <VectorPreviewDeckGL filename={filename} selectedColumn={selectedCol} />
+      <VectorPreviewDeckGL 
+        filename={filename} 
+        selectedColumn={selectedCol}
+        isMapSyncEnabled={isMapSyncEnabled}
+        globalViewState={globalViewState}
+        onGlobalViewStateChange={onGlobalViewStateChange}
+      />
 
       {/* 3. Controls Section */}
       <div style={{ padding: '10px 12px', backgroundColor: '#fff', borderTop: '1px solid #f1f5f9' }}>

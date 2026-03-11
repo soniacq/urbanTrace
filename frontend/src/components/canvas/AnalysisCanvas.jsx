@@ -4,6 +4,7 @@ import {
   addEdge, applyNodeChanges, applyEdgeChanges 
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { Link, Unlink } from 'lucide-react';
 
 // 1. Import components
 import DatasetNode from './nodes/DatasetNode'; 
@@ -16,6 +17,16 @@ const CanvasInner = () => {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [viewingDataset, setViewingDataset] = useState(null);
+  
+  // GLOBAL VIEWPORT SYNC: Linked camera states for comparative analysis
+  const [isMapSyncEnabled, setIsMapSyncEnabled] = useState(false);
+  const [globalViewState, setGlobalViewState] = useState({
+    longitude: -73.98,
+    latitude: 40.75,
+    zoom: 11,
+    pitch: 0,
+    bearing: 0
+  });
 
   const { screenToFlowPosition, getNode, getNodes, getEdges } = useReactFlow();
 
@@ -109,7 +120,11 @@ const CanvasInner = () => {
         data: {
           name: 'H3 Integration Result',
           isResult: true, 
-          spatialData: integrationData, 
+          spatialData: integrationData,
+          // GLOBAL VIEWPORT SYNC: Pass sync props to ResultMapNode
+          isMapSyncEnabled,
+          globalViewState,
+          onGlobalViewStateChange: setGlobalViewState
         }
       };
 
@@ -132,7 +147,25 @@ const CanvasInner = () => {
         }
       ];
     });
-  }, [setEdges, setNodes]); // Ensure setNodes is in the dependency array
+  }, [setEdges, setNodes, isMapSyncEnabled, globalViewState, setGlobalViewState]); // Ensure setNodes is in the dependency array
+
+  // GLOBAL VIEWPORT SYNC: Update existing ResultMapNodes and DatasetNodes when sync state changes
+  useMemo(() => {
+    setNodes(nds => nds.map(node => {
+      if (node.type === 'resultMapNode' || node.type === 'datasetNode') {
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            isMapSyncEnabled,
+            globalViewState,
+            onGlobalViewStateChange: setGlobalViewState
+          }
+        };
+      }
+      return node;
+    }));
+  }, [isMapSyncEnabled, globalViewState]);
 
 
   // 4. Update onConnect to pass data between nodes
@@ -293,8 +326,12 @@ const CanvasInner = () => {
           newNodeData.onIntegrationComplete = handleIntegrationComplete;
       } else {
           // DatasetNode: inject column select callback for state inheritance
+          // Also include sync props for viewport linking
           newNodeData.onShowInfo = handleShowInfo;
           newNodeData.onColumnSelect = createColumnSelectHandler(nodeId);
+          newNodeData.isMapSyncEnabled = isMapSyncEnabled;
+          newNodeData.globalViewState = globalViewState;
+          newNodeData.onGlobalViewStateChange = setGlobalViewState;
       }
 
       const newNode = {
@@ -311,6 +348,34 @@ const CanvasInner = () => {
 
   return (
     <div style={{ width: '100%', height: '100%', backgroundColor: '#f8fafc', position: 'relative' }}>
+      {/* GLOBAL VIEWPORT SYNC: Toggle button */}
+      <button
+        onClick={() => setIsMapSyncEnabled(!isMapSyncEnabled)}
+        title={isMapSyncEnabled ? 'Maps Linked - Click to unlink' : 'Link all map viewports'}
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          zIndex: 100,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '8px 12px',
+          backgroundColor: isMapSyncEnabled ? '#3b82f6' : '#fff',
+          color: isMapSyncEnabled ? '#fff' : '#64748b',
+          border: `1px solid ${isMapSyncEnabled ? '#3b82f6' : '#cbd5e1'}`,
+          borderRadius: '6px',
+          fontSize: '12px',
+          fontWeight: '600',
+          cursor: 'pointer',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+          transition: 'all 0.2s'
+        }}
+      >
+        {isMapSyncEnabled ? <Link size={14} /> : <Unlink size={14} />}
+        {isMapSyncEnabled ? 'Maps Linked' : 'Link Maps'}
+      </button>
+
       <div style={{ width: '100%', height: '100%' }} onDrop={onDrop} onDragOver={onDragOver}>
         <ReactFlow
           nodes={nodes}

@@ -8,6 +8,11 @@ const ResultMapNode = memo(({ id, data }) => {
   const [lineageExpanded, setLineageExpanded] = useState(false);
   const provenance = data?.spatialData?.provenance;
   
+  // GLOBAL VIEWPORT SYNC: Extract sync props from data
+  const isMapSyncEnabled = data?.isMapSyncEnabled || false;
+  const globalViewState = data?.globalViewState;
+  const onGlobalViewStateChange = data?.onGlobalViewStateChange;
+  
   // Check if this is a zoned result
   const isZoned = data?.spatialData?.isZoned;
   const outputMode = data?.spatialData?.outputMode || 'grid';
@@ -236,6 +241,9 @@ const ResultMapNode = memo(({ id, data }) => {
               color={rgbColor}
               showHex={showHex}
               showZones={showZones}
+              isMapSyncEnabled={isMapSyncEnabled}
+              globalViewState={globalViewState}
+              onGlobalViewStateChange={onGlobalViewStateChange}
             />
           </div>
         )}

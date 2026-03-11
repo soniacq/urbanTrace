@@ -6,12 +6,31 @@ import { WebMercatorViewport } from '@deck.gl/core';
 import { scaleLinear } from 'd3-scale'; // Import the scale function
 import axios from 'axios';
 
-const VectorPreviewDeckGL = ({ filename, selectedColumn }) => {
+const VectorPreviewDeckGL = ({ 
+  filename, 
+  selectedColumn,
+  // GLOBAL VIEWPORT SYNC: Props for linked camera
+  isMapSyncEnabled = false,
+  globalViewState,
+  onGlobalViewStateChange
+}) => {
   const [data, setData] = useState(null);
-  const [viewState, setViewState] = useState({
+  const [localViewState, setLocalViewState] = useState({
     longitude: -74.006, latitude: 40.7128, zoom: 10, pitch: 0, bearing: 0
   });
   const [loading, setLoading] = useState(true);
+  
+  // GLOBAL VIEWPORT SYNC: Use global or local viewState
+  const viewState = isMapSyncEnabled && globalViewState ? globalViewState : localViewState;
+  
+  // GLOBAL VIEWPORT SYNC: Handler for view state changes
+  const handleViewStateChange = ({ viewState: newViewState }) => {
+    if (isMapSyncEnabled && onGlobalViewStateChange) {
+      onGlobalViewStateChange(newViewState);
+    } else {
+      setLocalViewState(newViewState);
+    }
+  };
 
   // 1. Fetch Data (Same as before)
   useEffect(() => {
@@ -27,7 +46,7 @@ const VectorPreviewDeckGL = ({ filename, selectedColumn }) => {
               [[bounds.minLng, bounds.minLat], [bounds.maxLng, bounds.maxLat]],
               { padding: 10 }
             );
-            setViewState({ longitude, latitude, zoom, pitch: 0, bearing: 0 });
+            setLocalViewState({ longitude, latitude, zoom, pitch: 0, bearing: 0 });
           }
         }
         setLoading(false);
@@ -106,7 +125,7 @@ const VectorPreviewDeckGL = ({ filename, selectedColumn }) => {
     <div className="nodrag nowheel" style={{ width: '100%', height: '120px', position: 'relative', background: '#f1f5f9' }}>
       <DeckGL
         viewState={viewState}
-        onViewStateChange={({ viewState }) => setViewState(viewState)}
+        onViewStateChange={handleViewStateChange}
         controller={{ scrollZoom: true, dragPan: true, dragRotate: false, doubleClickZoom: true }}
         layers={[layer]}
         getTooltip={({object}) => object && selectedColumn ? `${selectedColumn}: ${object.properties[selectedColumn]}` : null}

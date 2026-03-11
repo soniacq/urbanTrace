@@ -4,19 +4,32 @@ import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { Layers } from 'lucide-react'; 
 
-const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex = true, showZones = false }) => {  
+const H3PreviewDeckGL = ({ 
+  hexData, 
+  geojsonData, 
+  color = [236, 72, 153], 
+  showHex = true, 
+  showZones = false,
+  // GLOBAL VIEWPORT SYNC: Props for linked camera
+  isMapSyncEnabled = false,
+  globalViewState,
+  onGlobalViewStateChange
+}) => {  
   // 👇 1. Add a ref to track the container and a state for readiness
     const containerRef = useRef(null);
     const [isReady, setIsReady] = useState(false);
     
     const [is3D, setIs3D] = useState(false);
-    const [viewState, setViewState] = useState({
+    const [localViewState, setLocalViewState] = useState({
       longitude: -74.0,
       latitude: 40.7,
       zoom: 10,
       pitch: 0, 
       bearing: 0
     });
+    
+    // GLOBAL VIEWPORT SYNC: Use global or local viewState
+    const viewState = isMapSyncEnabled && globalViewState ? globalViewState : localViewState;
   
     // 👇 2. THE SHIELD: Wait until React Flow gives this container actual dimensions (> 0)
     useEffect(() => {
@@ -35,11 +48,27 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
     const nextIs3D = !is3D;
     setIs3D(nextIs3D);
     
-    setViewState(prev => ({
-      ...prev,
+    const nextViewState = {
+      ...viewState,
       pitch: nextIs3D ? 45 : 0,  
-      bearing: nextIs3D ? prev.bearing : 0 
-    }));
+      bearing: nextIs3D ? viewState.bearing : 0 
+    };
+    
+    // GLOBAL VIEWPORT SYNC: Update appropriate state
+    if (isMapSyncEnabled && onGlobalViewStateChange) {
+      onGlobalViewStateChange(nextViewState);
+    } else {
+      setLocalViewState(nextViewState);
+    }
+  };
+  
+  // GLOBAL VIEWPORT SYNC: Handler for view state changes
+  const handleViewStateChange = ({ viewState: newViewState }) => {
+    if (isMapSyncEnabled && onGlobalViewStateChange) {
+      onGlobalViewStateChange(newViewState);
+    } else {
+      setLocalViewState(newViewState);
+    }
   };
 
   const { data, maxCount, variableNames } = useMemo(() => {
@@ -196,7 +225,7 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
           const lng = flatCoords[0];
           const lat = flatCoords[1];
           if (typeof lng === 'number' && typeof lat === 'number') {
-            setViewState(prev => ({
+            setLocalViewState(prev => ({
               ...prev,
               longitude: lng,
               latitude: lat,
@@ -213,7 +242,7 @@ const H3PreviewDeckGL = ({ hexData, geojsonData, color = [236, 72, 153], showHex
        {isReady && (
         <DeckGL
           viewState={viewState}
-          onViewStateChange={({ viewState }) => setViewState(viewState)}
+          onViewStateChange={handleViewStateChange}
           controller={true}
           layers={layers}
           getTooltip={({ object, layer }) => {
