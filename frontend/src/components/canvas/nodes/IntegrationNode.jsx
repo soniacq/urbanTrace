@@ -90,23 +90,45 @@ const IntegrationNode = memo(({ id, data }) => {
     let configsChanged = false;
     
     connectedDatasets.forEach(dataset => {
+      const meta = dataset.metadata;
+      // Get available numeric columns for auto-selection
+      const numericCols = meta?.columns?.filter(c => 
+        ['Integer', 'Float', 'http://schema.org/Integer', 'http://schema.org/Float'].includes(c.structural_type) 
+        || (c.mean !== undefined)
+      ).map(c => c.name) || [];
+      
       if (!newConfigs[dataset.id]) {
         // CONTEXTUAL STATE INHERITANCE:
         // Pre-populate targetColumn from upstream node's selection
+        // If no selection was made, auto-select first numeric column
         const inheritedColumn = dataset.inheritedColumn || '';
+        const autoSelectedColumn = inheritedColumn || (numericCols.length > 0 ? numericCols[0] : '');
         
         newConfigs[dataset.id] = {
           id: dataset.id,
           nodeId: dataset.nodeId,
           filename: dataset.filename,
           metadata: dataset.metadata,
-          targetColumn: inheritedColumn,  // Smart default from upstream
+          targetColumn: autoSelectedColumn,  // Smart default from upstream or auto-select
           allocation: GEOMETRY_TO_ALLOCATION[dataset.metadata?.geometricType] || 'ProportionalAreaWeighted',
           aggregation: 'SumAggregation',
           zoningMapping: 'AreaWeightedZoning',
           zoningAggregation: 'SumZoning'
         };
         configsChanged = true;
+      } else {
+        // LIVE SYNC: Update targetColumn if upstream selection changed
+        const currentConfig = newConfigs[dataset.id];
+        const inheritedColumn = dataset.inheritedColumn || '';
+        
+        // Only update if upstream selected a column AND it's different from current
+        if (inheritedColumn && inheritedColumn !== currentConfig.targetColumn) {
+          newConfigs[dataset.id] = {
+            ...currentConfig,
+            targetColumn: inheritedColumn
+          };
+          configsChanged = true;
+        }
       }
     });
     
@@ -162,19 +184,17 @@ const IntegrationNode = memo(({ id, data }) => {
   const [zoningExpanded, setZoningExpanded] = useState(false);
   const [zoningMapping, setZoningMapping] = useState("AreaWeightedZoning");
   const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
-  const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
+  const [outputMode, setOutputMode] = useState("zones"); // "grid" | "zones" | "both"
 
-  // Auto-expand zoning panel when zone dataset is connected
-  // Reset to defaults when disconnected
+  // Reset zoning settings to defaults when zone disconnected
+  // Keep collapsed by default for progressive disclosure (user expands if needed)
   useEffect(() => {
-    if (zoningEnabled) {
-      setZoningExpanded(true);
-    } else {
+    if (!zoningEnabled) {
       // CONNECTION REMOVED: Reset zoning settings to defaults
       setZoningExpanded(false);
       setZoningMapping("AreaWeightedZoning");
       setZoningAggregation("SumZoning");
-      setOutputMode("grid");
+      setOutputMode("zones");
     }
   }, [zoningEnabled]);
 
@@ -212,7 +232,7 @@ const IntegrationNode = memo(({ id, data }) => {
           })),
           zones_path: zoningEnabled ? data.connectedZoneFilename : null,
           resolution: parseInt(resolution),
-          output_mode: outputMode
+          output_mode: zoningEnabled ? outputMode : 'grid'  // Default to grid when no zoning
         })
       });
 
@@ -227,7 +247,7 @@ const IntegrationNode = memo(({ id, data }) => {
       const resultData = await response.json();
       resultData.isMultivariate = configsArray.length > 1;
       resultData.isZoned = zoningEnabled;
-      resultData.outputMode = outputMode;
+      resultData.outputMode = zoningEnabled ? outputMode : 'grid';
 
       // DATA LINEAGE: Capture configuration snapshot for provenance tracking
       resultData.provenance = {
@@ -236,7 +256,7 @@ const IntegrationNode = memo(({ id, data }) => {
         resolution: parseInt(resolution),
         zoningEnabled: zoningEnabled,
         targetZones: zoningEnabled ? data.connectedZoneFilename : null,
-        outputMode: outputMode,
+        outputMode: zoningEnabled ? outputMode : 'grid',
         variables: configsArray.map(v => ({
           dataset: v.filename,
           targetColumn: v.targetColumn,
@@ -319,7 +339,8 @@ const IntegrationNode = memo(({ id, data }) => {
           width: '8px', 
           height: '8px', 
           left: '-4px', 
-          top: '70%', 
+          top: 'auto',
+          bottom: '15%',
           border: '2px solid white',
           transition: 'background-color 0.2s'
         }} 
@@ -420,7 +441,9 @@ const IntegrationNode = memo(({ id, data }) => {
                       }}>
                         {geoType}
                       </span>
-                      {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      <span title={isExpanded ? 'Collapse' : 'Configure'}>
+                        {isExpanded ? <ChevronUp size={12} color="#6366f1" /> : <ChevronDown size={12} color="#6366f1" />}
+                      </span>
                     </div>
                   </div>
                   
@@ -613,13 +636,13 @@ const IntegrationNode = memo(({ id, data }) => {
         }}>
           {/* Zoning Toggle Header - CONNECTION-DRIVEN (no checkbox) */}
           <div 
-            onClick={(e) => { e.stopPropagation(); setZoningExpanded(!zoningExpanded); }}
+            onClick={(e) => { e.stopPropagation(); if (zoningEnabled) setZoningExpanded(!zoningExpanded); }}
             className="nodrag"
             style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              cursor: 'pointer',
+              cursor: zoningEnabled ? 'pointer' : 'default',
               padding: '4px 0'
             }}
           >
@@ -629,7 +652,11 @@ const IntegrationNode = memo(({ id, data }) => {
                 {zoningEnabled ? 'Zoning Active' : 'Connect zone to enable'}
               </span>
             </div>
-            {zoningEnabled && (zoningExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+            {zoningEnabled && (
+              <span title={zoningExpanded ? 'Collapse' : 'Settings'} style={{ color: '#047857' }}>
+                {zoningExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </span>
+            )}
           </div>
 
           {/* Zoning Controls - Per-variable ops are configured in cards */}

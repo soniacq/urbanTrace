@@ -17,7 +17,7 @@ const CanvasInner = () => {
   const [edges, setEdges] = useState([]);
   const [viewingDataset, setViewingDataset] = useState(null);
 
-  const { screenToFlowPosition, getNode } = useReactFlow();
+  const { screenToFlowPosition, getNode, getNodes, getEdges } = useReactFlow();
 
   // 2. Register the custom node types
   const nodeTypes = useMemo(() => ({
@@ -137,73 +137,84 @@ const CanvasInner = () => {
 
   // 4. Update onConnect to pass data between nodes
   const onConnect = useCallback((params) => {
-    setEdges((eds) => addEdge(params, eds));
+    // Get current nodes state OUTSIDE of setNodes callback for early validation
+    const currentNodes = getNodes();
+    const sourceNode = currentNodes.find(n => n.id === params.source);
+    const targetNode = currentNodes.find(n => n.id === params.target);
 
-    // When a connection is made, pass the dataset filename into the Integration Node
-    setNodes((nds) => {
-      const sourceNode = nds.find(n => n.id === params.source);
-      const targetNode = nds.find(n => n.id === params.target);
+    // Early return if not a valid connection to IntegrationNode
+    if (targetNode?.type !== 'integrationNode' || !sourceNode?.data?.filename) {
+      return;
+    }
 
-      // Handle connections to IntegrationNode
-      if (targetNode?.type === 'integrationNode' && sourceNode?.data?.filename) {
-        return nds.map(node => {
-          if (node.id === params.target) {
-            // Determine which handle was connected to
-            const handleId = params.targetHandle;
-            
-            if (handleId === 'zones') {
-              // Zone dataset connection
-              return {
-                ...node,
-                data: {
-                  ...node.data,
-                  connectedZoneFilename: sourceNode.data.filename,
-                  connectedZoneMetadata: sourceNode.data.metadata
-                }
-              };
-            } else {
-              // Source dataset connection - MULTIVARIATE SUPPORT
-              // Accumulate datasets into an array for Variable Cards
-              const existingDatasets = node.data.connectedDatasets || [];
-              
-              // CONTEXTUAL STATE INHERITANCE:
-              // Pass upstream node's selected column to pre-populate Variable Card
-              const inheritedColumn = sourceNode.data.selectedColumn || '';
-              
-              const newDataset = {
-                id: `var_${Date.now()}`,
-                nodeId: sourceNode.id,
-                filename: sourceNode.data.filename,
-                metadata: sourceNode.data.metadata,
-                inheritedColumn: inheritedColumn  // Pass selected column downstream
-              };
-              
-              // Check if this dataset is already connected
-              const alreadyConnected = existingDatasets.some(d => d.nodeId === sourceNode.id);
-              
-              if (alreadyConnected) {
-                return node; // Don't add duplicate
-              }
-              
-              return {
-                ...node,
-                data: {
-                  ...node.data,
-                  // Keep legacy single-dataset fields for backward compatibility
-                  connectedDatasetFilename: sourceNode.data.filename,
-                  connectedDatasetMetadata: sourceNode.data.metadata,
-                  // NEW: Array of all connected datasets for multivariate
-                  connectedDatasets: [...existingDatasets, newDataset]
-                }
-              };
+    const handleId = params.targetHandle;
+
+    // SINGLE ZONE RESTRICTION: Check BEFORE calling setNodes
+    if (handleId === 'zones' && targetNode.data.connectedZoneFilename) {
+      alert('Only one zoning dataset can be connected at a time. Please disconnect the current zone dataset first.');
+      return; // Exit early - don't call setNodes or setEdges
+    }
+
+    // Now handle the valid connection
+    if (handleId === 'zones') {
+      // Zone connection - add edge and update node data
+      setEdges((eds) => addEdge(params, eds));
+      setNodes((nds) => nds.map(node => {
+        if (node.id === params.target) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              connectedZoneFilename: sourceNode.data.filename,
+              connectedZoneMetadata: sourceNode.data.metadata
             }
-          }
-          return node;
-        });
+          };
+        }
+        return node;
+      }));
+    } else {
+      // Source dataset connection - MULTIVARIATE SUPPORT
+      const existingDatasets = targetNode.data.connectedDatasets || [];
+      
+      // Check if this dataset is already connected
+      const alreadyConnected = existingDatasets.some(d => d.nodeId === sourceNode.id);
+      if (alreadyConnected) {
+        return; // Don't add duplicate
       }
-      return nds;
-    });
-  }, [setNodes, setEdges]);
+
+      // Add the edge
+      setEdges((eds) => addEdge(params, eds));
+      
+      // CONTEXTUAL STATE INHERITANCE:
+      // Pass upstream node's selected column to pre-populate Variable Card
+      const inheritedColumn = sourceNode.data.selectedColumn || '';
+      
+      const newDataset = {
+        id: `var_${Date.now()}`,
+        nodeId: sourceNode.id,
+        filename: sourceNode.data.filename,
+        metadata: sourceNode.data.metadata,
+        inheritedColumn: inheritedColumn
+      };
+      
+      setNodes((nds) => nds.map(node => {
+        if (node.id === params.target) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              // Keep legacy single-dataset fields for backward compatibility
+              connectedDatasetFilename: sourceNode.data.filename,
+              connectedDatasetMetadata: sourceNode.data.metadata,
+              // NEW: Array of all connected datasets for multivariate
+              connectedDatasets: [...existingDatasets, newDataset]
+            }
+          };
+        }
+        return node;
+      }));
+    }
+  }, [setNodes, setEdges, getNodes]);
 
   const handleShowInfo = useCallback((nodeData) => {
     setViewingDataset(nodeData); 
@@ -211,22 +222,49 @@ const CanvasInner = () => {
 
   // CONTEXTUAL STATE INHERITANCE:
   // Factory to create column-select callback for each DatasetNode
+  // Also propagates changes to any connected downstream IntegrationNodes
   const createColumnSelectHandler = useCallback((nodeId) => {
     return (selectedColumn) => {
-      setNodes((nds) => nds.map((node) => {
-        if (node.id === nodeId) {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              selectedColumn: selectedColumn
-            }
-          };
-        }
-        return node;
-      }));
+      // Get current edges to find downstream connections
+      const currentEdges = getEdges();
+      const downstreamEdges = currentEdges.filter(e => e.source === nodeId);
+      
+      setNodes((nds) => {
+        return nds.map((node) => {
+          // Update the source DatasetNode
+          if (node.id === nodeId) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                selectedColumn: selectedColumn
+              }
+            };
+          }
+          
+          // Propagate to downstream IntegrationNodes
+          const edgeToThis = downstreamEdges.find(e => e.target === node.id);
+          if (edgeToThis && node.type === 'integrationNode' && node.data.connectedDatasets) {
+            const updatedDatasets = node.data.connectedDatasets.map(d => {
+              if (d.nodeId === nodeId) {
+                return { ...d, inheritedColumn: selectedColumn };
+              }
+              return d;
+            });
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                connectedDatasets: updatedDatasets
+              }
+            };
+          }
+          
+          return node;
+        });
+      });
     };
-  }, [setNodes]);
+  }, [setNodes, getEdges]);
 
   const onDragOver = useCallback((event) => {
     event.preventDefault();
@@ -281,6 +319,7 @@ const CanvasInner = () => {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          edgesReconnectable={false}
           fitView
         >
           <Background variant="dots" gap={20} size={1} color="#cbd5e1" />
