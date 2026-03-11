@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { 
   ReactFlow, Background, Controls, useReactFlow, ReactFlowProvider, 
   addEdge, applyNodeChanges, applyEdgeChanges 
@@ -13,7 +13,7 @@ import IntegrationNode from './nodes/IntegrationNode'; // <--- NEW Import
 import DatasetDetailsModal from '../catalog/DatasetDetailsModal'; 
 import ResultMapNode from './nodes/ResultMapNode'; // Add this at the top
 
-const CanvasInner = () => {
+const CanvasInner = ({ sidebarCollapsed }) => {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [viewingDataset, setViewingDataset] = useState(null);
@@ -28,7 +28,16 @@ const CanvasInner = () => {
     bearing: 0
   });
 
-  const { screenToFlowPosition, getNode, getNodes, getEdges } = useReactFlow();
+  const { screenToFlowPosition, getNode, getNodes, getEdges, fitView } = useReactFlow();
+  
+  // SIDEBAR RESIZE FIX: Trigger React Flow resize recalculation after sidebar transition
+  useEffect(() => {
+    // Wait for CSS transition to complete (300ms), then trigger resize
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [sidebarCollapsed]);
 
   // 2. Register the custom node types
   const nodeTypes = useMemo(() => ({
@@ -403,9 +412,9 @@ const CanvasInner = () => {
   );
 };
 
-const AnalysisCanvas = () => (
+const AnalysisCanvas = ({ sidebarCollapsed }) => (
   <ReactFlowProvider>
-    <CanvasInner />
+    <CanvasInner sidebarCollapsed={sidebarCollapsed} />
   </ReactFlowProvider>
 );
 

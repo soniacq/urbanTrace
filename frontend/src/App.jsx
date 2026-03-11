@@ -30,6 +30,7 @@ function App() {
             height: '100%', 
             overflow: 'hidden', // Hides content when sidebar slides shut
             opacity: leftOpen ? 1 : 0, // Smooth fade out
+            pointerEvents: leftOpen ? 'auto' : 'none', // CRITICAL: Disable interactions when collapsed
             transition: 'opacity 0.2s'
         }}>
            <DatasetSidebar />
@@ -66,7 +67,7 @@ function App() {
 
       {/* --- MIDDLE: CANVAS --- */}
       <main style={{ flexGrow: 1, position: 'relative', backgroundColor: '#f1f5f9' }}>
-        <AnalysisCanvas />
+        <AnalysisCanvas sidebarCollapsed={!leftOpen} />
       </main>
 
       {/* --- RIGHT SIDEBAR (Fixed) --- */}

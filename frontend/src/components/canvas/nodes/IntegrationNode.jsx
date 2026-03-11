@@ -270,6 +270,11 @@ const IntegrationNode = memo(({ id, data }) => {
       if (data.onIntegrationComplete) {
         data.onIntegrationComplete(id, resultData);
       }
+      
+      // COLLAPSE ALL CARDS: Clean up UI after successful execution
+      setExpandedCards({});
+      setAdvancedExpanded({});
+      setZoningExpanded(false);
     } catch (error) {
       console.error("Pipeline Error:", error);
       alert(`Error: ${error.message}`);
