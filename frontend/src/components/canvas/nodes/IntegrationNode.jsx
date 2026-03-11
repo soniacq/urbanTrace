@@ -189,12 +189,27 @@ const IntegrationNode = memo(({ id, data }) => {
     }
   }, [geometryType]);
 
-  // Zoning state
-  const [zoningEnabled, setZoningEnabled] = useState(false);
+  // CONNECTION-DRIVEN STATE: Zoning is enabled when a zone dataset is connected
+  // No checkbox needed - the wire IS the toggle
+  const zoningEnabled = !!data.connectedZoneFilename;
   const [zoningExpanded, setZoningExpanded] = useState(false);
   const [zoningMapping, setZoningMapping] = useState("AreaWeightedZoning");
   const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
   const [outputMode, setOutputMode] = useState("grid"); // "grid" | "zones" | "both"
+
+  // Auto-expand zoning panel when zone dataset is connected
+  // Reset to defaults when disconnected
+  useEffect(() => {
+    if (zoningEnabled) {
+      setZoningExpanded(true);
+    } else {
+      // CONNECTION REMOVED: Reset zoning settings to defaults
+      setZoningExpanded(false);
+      setZoningMapping("AreaWeightedZoning");
+      setZoningAggregation("SumZoning");
+      setOutputMode("grid");
+    }
+  }, [zoningEnabled]);
 
   // Reverse-Sync - Zone Aggregator auto-sets Grid Aggregator (legacy)
   // When user selects their final output math, we backfill the grid step
@@ -221,10 +236,8 @@ const IntegrationNode = memo(({ id, data }) => {
         return;
       }
 
-      if (zoningEnabled && !data.connectedZoneFilename) {
-        alert("Please connect a zone dataset to use zoning, or disable zoning.");
-        return;
-      }
+      // CONNECTION-DRIVEN: No need to validate zoningEnabled && !connectedZone
+      // because zoningEnabled IS derived from connectedZoneFilename
 
       setIsLoading(true);
       try {
@@ -298,18 +311,15 @@ const IntegrationNode = memo(({ id, data }) => {
       return;
     }
 
-    // If zoning is enabled but no zone dataset is connected
-    if (zoningEnabled && !data.connectedZoneFilename) {
-      alert("Please connect a zone dataset to use zoning, or disable zoning.");
-      return;
-    }
+    // CONNECTION-DRIVEN: No need to check zoningEnabled && !connectedZone
+    // because zoningEnabled IS derived from connectedZoneFilename
 
     setIsLoading(true);
     try {
       let response;
       let resultData;
 
-      if (zoningEnabled && data.connectedZoneFilename) {
+      if (zoningEnabled) {
         // Call the zoned integration endpoint
         response = await fetch('http://localhost:8000/api/integrate_zoned', {
           method: 'POST',
@@ -392,13 +402,12 @@ const IntegrationNode = memo(({ id, data }) => {
     isMultivariate,
     variableConfigs,
     data.connectedDatasetFilename,
-    data.connectedZoneFilename,
+    data.connectedZoneFilename, // zoningEnabled is derived from this
     data.onIntegrationComplete,
     targetColumn,
     allocation,
     aggregation,
     resolution,
-    zoningEnabled,
     zoningMapping,
     zoningAggregation,
     outputMode
@@ -823,7 +832,7 @@ const IntegrationNode = memo(({ id, data }) => {
           borderTop: '1px solid #e2e8f0',
           paddingTop: '8px'
         }}>
-          {/* Zoning Toggle Header */}
+          {/* Zoning Toggle Header - CONNECTION-DRIVEN (no checkbox) */}
           <div 
             onClick={(e) => { e.stopPropagation(); setZoningExpanded(!zoningExpanded); }}
             className="nodrag"
@@ -836,20 +845,9 @@ const IntegrationNode = memo(({ id, data }) => {
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <input
-                type="checkbox"
-                checked={zoningEnabled}
-                onChange={(e) => { 
-                  e.stopPropagation(); 
-                  setZoningEnabled(e.target.checked);
-                  if (e.target.checked) setZoningExpanded(true);
-                }}
-                className="nodrag"
-                style={{ margin: 0, cursor: 'pointer' }}
-              />
               <MapPin size={12} color={zoningEnabled ? '#10b981' : '#9ca3af'} />
               <span style={{ fontSize: '10px', fontWeight: '600', color: zoningEnabled ? '#047857' : '#64748b' }}>
-                Aggregate to Zones (Z)
+                {zoningEnabled ? 'Zoning Active' : 'Connect zone to enable'}
               </span>
             </div>
             {zoningEnabled && (zoningExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
@@ -999,8 +997,7 @@ const IntegrationNode = memo(({ id, data }) => {
             (isMultivariate 
               ? Object.values(variableConfigs).some(v => !v.targetColumn) 
               : (!data.connectedDatasetFilename || !targetColumn)
-            ) || 
-            (zoningEnabled && !data.connectedZoneFilename)
+            )
           }
           className="nodrag"
           style={{
@@ -1015,8 +1012,7 @@ const IntegrationNode = memo(({ id, data }) => {
               (isMultivariate 
                 ? Object.values(variableConfigs).some(v => !v.targetColumn) 
                 : (!data.connectedDatasetFilename || !targetColumn)
-              ) || 
-              (zoningEnabled && !data.connectedZoneFilename)
+              )
             ) ? '#cbd5e1' : (isMultivariate ? '#6366f1' : '#2563eb'),
             color: '#fff',
             border: 'none',
@@ -1028,8 +1024,7 @@ const IntegrationNode = memo(({ id, data }) => {
               (isMultivariate 
                 ? Object.values(variableConfigs).some(v => !v.targetColumn) 
                 : (!data.connectedDatasetFilename || !targetColumn)
-              ) || 
-              (zoningEnabled && !data.connectedZoneFilename)
+              )
             ) ? 'not-allowed' : 'pointer',
             transition: 'background-color 0.2s'
           }}

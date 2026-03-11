@@ -28,7 +28,63 @@ const CanvasInner = () => {
   }), []);
 
   const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
-  const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
+  
+  // CONNECTION-DRIVEN STATE: Clear node data when edges are deleted
+  const onEdgesChange = useCallback((changes) => {
+    // Handle edge removals BEFORE applying changes (so we can still access the edge data)
+    const removals = changes.filter(change => change.type === 'remove');
+    
+    if (removals.length > 0) {
+      setEdges((currentEdges) => {
+        // Find edge data BEFORE they're removed
+        const edgesToRemove = removals
+          .map(r => currentEdges.find(e => e.id === r.id))
+          .filter(Boolean);
+        
+        if (edgesToRemove.length > 0) {
+          // Clear connected data from target nodes
+          setNodes((nds) => {
+            return nds.map(node => {
+              const removedEdgesForNode = edgesToRemove.filter(e => e.target === node.id);
+              
+              if (removedEdgesForNode.length === 0) return node;
+              
+              let updatedData = { ...node.data };
+              
+              removedEdgesForNode.forEach(edge => {
+                if (edge.targetHandle === 'zones') {
+                  // Zone connection removed - clear zone data
+                  updatedData.connectedZoneFilename = null;
+                  updatedData.connectedZoneMetadata = null;
+                } else {
+                  // Source dataset connection removed - remove from connectedDatasets
+                  const sourceNodeId = edge.source;
+                  if (updatedData.connectedDatasets) {
+                    updatedData.connectedDatasets = updatedData.connectedDatasets.filter(
+                      d => d.nodeId !== sourceNodeId
+                    );
+                    // Update legacy single-dataset field if array is empty
+                    if (updatedData.connectedDatasets.length === 0) {
+                      updatedData.connectedDatasetFilename = null;
+                      updatedData.connectedDatasetMetadata = null;
+                    }
+                  }
+                }
+              });
+              
+              return { ...node, data: updatedData };
+            });
+          });
+        }
+        
+        // Now apply the edge changes (remove the edges)
+        return applyEdgeChanges(changes, currentEdges);
+      });
+    } else {
+      // No removals - just apply changes normally
+      setEdges((eds) => applyEdgeChanges(changes, eds));
+    }
+  }, [setEdges, setNodes]);
 
   // 3. The Handler for when the Integration API finishes
   const handleIntegrationComplete = useCallback((sourceNodeId, integrationData) => {
