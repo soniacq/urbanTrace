@@ -1,8 +1,9 @@
 // frontend/src/components/RightSidebar.jsx
 import React from 'react';
 import OperationsSidebar from '../toolbox/OperationsSidebar'; // Re-using the component we made
+import IntegrationTopologyPanel from './IntegrationTopologyPanel';
 
-const RightSidebar = () => {
+const RightSidebar = ({ activityLogs = [], onHoverLog, focusedLogTs }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: '#fff' }}>
       
@@ -19,17 +20,34 @@ const RightSidebar = () => {
         </div>
       </div>
 
-      {/* BOTTOM HALF: History / Logs (Placeholder) */}
-      <div style={{ flex: '1 1 50%', display: 'flex', flexDirection: 'column', backgroundColor: '#f9fafb' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb', background: '#f1f5f9' }}>
+      {/* BOTTOM HALF: Activity Log */}
+      <div style={{ flex: '1 1 50%', display: 'flex', flexDirection: 'column', backgroundColor: '#f9fafb', overflow: 'hidden' }}>
+        <div style={{ 
+          padding: '12px 16px', 
+          borderBottom: '1px solid #e5e7eb', 
+          background: '#f1f5f9',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
             <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: '600', color: '#475569', textTransform: 'uppercase' }}>
-                Activity Log
+                Integration Topology
             </h3>
+            {activityLogs.length > 0 && (
+              <span style={{
+                backgroundColor: '#e0e7ff',
+                color: '#4338ca',
+                padding: '2px 8px',
+                borderRadius: '10px',
+                fontSize: '11px',
+                fontWeight: '600'
+              }}>
+                {activityLogs.length}
+              </span>
+            )}
         </div>
-        <div style={{ padding: '20px', color: '#94a3b8', fontSize: '0.8rem', textAlign: 'center', marginTop: 'auto', marginBottom: 'auto' }}>
-           Waiting for actions...
-           <br/>
-           (Analysis History will appear here)
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          <IntegrationTopologyPanel logs={activityLogs} onHoverLog={onHoverLog} focusedLogTs={focusedLogTs} />
         </div>
       </div>
 

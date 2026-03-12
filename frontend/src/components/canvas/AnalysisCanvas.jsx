@@ -13,7 +13,7 @@ import IntegrationNode from './nodes/IntegrationNode'; // <--- NEW Import
 import DatasetDetailsModal from '../catalog/DatasetDetailsModal'; 
 import ResultMapNode from './nodes/ResultMapNode'; // Add this at the top
 
-const CanvasInner = ({ sidebarCollapsed }) => {
+const CanvasInner = ({ sidebarCollapsed, onLogActivity, highlightedLogTs, focusedLogTs, onTraceLineage }) => {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [viewingDataset, setViewingDataset] = useState(null);
@@ -176,6 +176,19 @@ const CanvasInner = ({ sidebarCollapsed }) => {
     }));
   }, [isMapSyncEnabled, globalViewState]);
 
+  // CROSS-CANVAS CONNECTION: Push highlightedLogTs, focusedLogTs, and onTraceLineage to all ResultMapNodes
+  useEffect(() => {
+    setNodes(nds => nds.map(node => {
+      if (node.type === 'resultMapNode') {
+        return {
+          ...node,
+          data: { ...node.data, highlightedLogTs, focusedLogTs, onTraceLineage }
+        };
+      }
+      return node;
+    }));
+  }, [highlightedLogTs, focusedLogTs, onTraceLineage]);
+
 
   // 4. Update onConnect to pass data between nodes
   const onConnect = useCallback((params) => {
@@ -333,6 +346,7 @@ const CanvasInner = ({ sidebarCollapsed }) => {
       } else if (newNodeType === 'integrationNode') {
           // Inject the callback so the node can talk back to the canvas when the API finishes
           newNodeData.onIntegrationComplete = handleIntegrationComplete;
+          newNodeData.onLogActivity = onLogActivity; // ACTIVITY LOG: Pass audit trail callback
       } else {
           // DatasetNode: inject column select callback for state inheritance
           // Also include sync props for viewport linking
@@ -412,9 +426,9 @@ const CanvasInner = ({ sidebarCollapsed }) => {
   );
 };
 
-const AnalysisCanvas = ({ sidebarCollapsed }) => (
+const AnalysisCanvas = ({ sidebarCollapsed, onLogActivity, highlightedLogTs, focusedLogTs, onTraceLineage }) => (
   <ReactFlowProvider>
-    <CanvasInner sidebarCollapsed={sidebarCollapsed} />
+    <CanvasInner sidebarCollapsed={sidebarCollapsed} onLogActivity={onLogActivity} highlightedLogTs={highlightedLogTs} focusedLogTs={focusedLogTs} onTraceLineage={onTraceLineage} />
   </ReactFlowProvider>
 );
 

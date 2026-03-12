@@ -7,6 +7,18 @@ import RightSidebar from './components/layout/RightSidebar';
 
 function App() {
   const [leftOpen, setLeftOpen] = useState(true);
+  
+  // GLOBAL ACTIVITY LOG: Track all pipeline executions for audit trail
+  const [activityLogs, setActivityLogs] = useState([]);
+  
+  // CROSS-CANVAS CONNECTION: Bidirectional hover/highlight between topology matrix and ResultMapNodes
+  const [highlightedLogTs, setHighlightedLogTs] = useState(null);  // Matrix→Canvas (hover)
+  const [focusedLogTs, setFocusedLogTs] = useState(null);          // Canvas→Matrix (click "Trace Lineage")
+  
+  const appendToActivityLog = (logEntry) => {
+    // Prepend so newest appears at top
+    setActivityLogs(prevLogs => [logEntry, ...prevLogs]);
+  };
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' }}>
@@ -67,18 +79,28 @@ function App() {
 
       {/* --- MIDDLE: CANVAS --- */}
       <main style={{ flexGrow: 1, position: 'relative', backgroundColor: '#f1f5f9' }}>
-        <AnalysisCanvas sidebarCollapsed={!leftOpen} />
+        <AnalysisCanvas 
+          sidebarCollapsed={!leftOpen} 
+          onLogActivity={appendToActivityLog}
+          highlightedLogTs={highlightedLogTs}
+          focusedLogTs={focusedLogTs}
+          onTraceLineage={setFocusedLogTs}
+        />
       </main>
 
       {/* --- RIGHT SIDEBAR (Fixed) --- */}
       <aside style={{ 
-          width: '280px', 
+          width: '380px', 
           backgroundColor: '#fff', 
           borderLeft: '1px solid #e5e7eb',
           flexShrink: 0,
           zIndex: 10 
       }}>
-        <RightSidebar />
+        <RightSidebar 
+          activityLogs={activityLogs} 
+          onHoverLog={setHighlightedLogTs}
+          focusedLogTs={focusedLogTs}
+        />
       </aside>
       
     </div>

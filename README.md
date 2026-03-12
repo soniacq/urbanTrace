@@ -7,7 +7,7 @@ UrbanTrace lets you visually construct data pipelines on an infinite canvas — 
 ![Status](https://img.shields.io/badge/status-in_progress-yellow)
 ![Stack](https://img.shields.io/badge/stack-React%20%2B%20FastAPI%20%2B%20Deck.GL-blue)
 
-![UrbanTrace Screenshot](docs/screenshots/urbantrace_v3_preview.png)
+![UrbanTrace Screenshot](docs/screenshots/urbantrace_v4_preview.png)
 
 ---
 

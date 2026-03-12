@@ -217,6 +217,7 @@ const IntegrationNode = memo(({ id, data }) => {
     }
 
     setIsLoading(true);
+    const startTime = performance.now();
     try {
       const response = await fetch('http://localhost:8000/api/integrate_multivariate', {
         method: 'POST',
@@ -249,9 +250,12 @@ const IntegrationNode = memo(({ id, data }) => {
       resultData.isZoned = zoningEnabled;
       resultData.outputMode = zoningEnabled ? outputMode : 'grid';
 
+      const durationMs = Math.round(performance.now() - startTime);
+
       // DATA LINEAGE: Capture configuration snapshot for provenance tracking
       resultData.provenance = {
         timestamp: new Date().toISOString(),
+        durationMs,
         isMultivariate: configsArray.length > 1,
         resolution: parseInt(resolution),
         zoningEnabled: zoningEnabled,
@@ -271,12 +275,38 @@ const IntegrationNode = memo(({ id, data }) => {
         data.onIntegrationComplete(id, resultData);
       }
       
+      // ACTIVITY LOG: Emit success entry to global audit trail
+      if (data.onLogActivity) {
+        data.onLogActivity({
+          status: 'success',
+          ...resultData.provenance
+        });
+      }
+      
       // COLLAPSE ALL CARDS: Clean up UI after successful execution
       setExpandedCards({});
       setAdvancedExpanded({});
       setZoningExpanded(false);
     } catch (error) {
       console.error("Pipeline Error:", error);
+      
+      const durationMs = Math.round(performance.now() - startTime);
+      // ACTIVITY LOG: Emit error entry to global audit trail
+      if (data.onLogActivity) {
+        data.onLogActivity({
+          status: 'error',
+          timestamp: new Date().toISOString(),
+          durationMs,
+          errorMessage: error.message,
+          resolution: parseInt(resolution),
+          zoningEnabled: zoningEnabled,
+          variables: configsArray.map(v => ({
+            dataset: v.filename,
+            targetColumn: v.targetColumn
+          }))
+        });
+      }
+      
       alert(`Error: ${error.message}`);
     } finally {
       setIsLoading(false);
