@@ -35,6 +35,7 @@ UrbanTrace lets you visually construct data pipelines on an infinite canvas — 
 - **Interactive 2D/3D Canvas:** Powered by a custom `H3PreviewDeckGL` component — toggle between a flat 2D density view and a 3D extruded view inside the node
 - **Contextual Density Legends:** In 2D mode, dynamically calculates dataset overlap counts and renders a compact color-scale legend inside the viewport
 - **Polished Execution States:** Frosted-glass "Processing..." overlay activates during backend computation
+- **Integration Copilot (✨ Ask AI):** Recommends zoning operators per variable (`zoningMapping`, `zoningAggregation`) using metadata statistics + geometry context; keeps grid operators deterministic on the frontend
 ---
 
 ## 🏗️ Tech Stack
@@ -78,9 +79,17 @@ urbanTrace/
 cd backend
 python -m venv venv
 source venv/bin/activate
-pip install fastapi uvicorn
+pip install fastapi uvicorn python-dotenv
 uvicorn main:app --reload --port 8000
 ```
+
+Optional for LLM-backed copilot recommendations:
+```bash
+cp .env.example .env
+# then edit .env with your values
+```
+
+`.env` is loaded automatically by the backend (no extra CLI flags required).
 
 ### Frontend
 ```bash
@@ -90,6 +99,8 @@ npm run dev
 ```
 
 App runs at **http://localhost:5173**
+
+Copilot endpoint: **POST /api/v1/copilot/recommend-operators**
 
 ---
 

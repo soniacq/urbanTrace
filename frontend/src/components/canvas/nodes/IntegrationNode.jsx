@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Network, Play, AlertCircle, MapPin, ChevronDown, ChevronUp, Settings } from 'lucide-react';
+import { Network, Play, AlertCircle, MapPin, ChevronDown, ChevronUp, Settings, Sparkles, Loader2 } from 'lucide-react';
 
 const ALLOCATION_OPS = [
   "BinaryContainment",
@@ -153,15 +153,6 @@ const IntegrationNode = memo(({ id, data }) => {
     }));
   }, []);
 
-  // Remove a variable
-  const removeVariable = useCallback((varId) => {
-    setVariableConfigs(prev => {
-      const next = { ...prev };
-      delete next[varId];
-      return next;
-    });
-  }, []);
-
   // Toggle card expansion
   const toggleCardExpand = useCallback((varId) => {
     setExpandedCards(prev => ({
@@ -182,9 +173,9 @@ const IntegrationNode = memo(({ id, data }) => {
   // No checkbox needed - the wire IS the toggle
   const zoningEnabled = !!data.connectedZoneFilename;
   const [zoningExpanded, setZoningExpanded] = useState(false);
-  const [zoningMapping, setZoningMapping] = useState("AreaWeightedZoning");
-  const [zoningAggregation, setZoningAggregation] = useState("SumZoning");
   const [outputMode, setOutputMode] = useState("zones"); // "grid" | "zones" | "both"
+  const [copilotState, setCopilotState] = useState('idle'); // idle | loading | success | error
+  const [copilotReasoning, setCopilotReasoning] = useState({});
 
   // Reset zoning settings to defaults when zone disconnected
   // Keep collapsed by default for progressive disclosure (user expands if needed)
@@ -192,30 +183,14 @@ const IntegrationNode = memo(({ id, data }) => {
     if (!zoningEnabled) {
       // CONNECTION REMOVED: Reset zoning settings to defaults
       setZoningExpanded(false);
-      setZoningMapping("AreaWeightedZoning");
-      setZoningAggregation("SumZoning");
       setOutputMode("zones");
     }
   }, [zoningEnabled]);
 
-  const handleRun = useCallback(async (e) => {
-    e.stopPropagation();
-    
-    // UNIFIED VARIABLE CARDS: Always use multivariate pipeline (even for 1 variable)
-    const configsArray = Object.values(variableConfigs);
-    
-    if (configsArray.length === 0) {
-      alert("Please connect at least one dataset to the Integration Engine.");
-      return;
-    }
-    
-    // Validate all variables have target columns
-    const missingTargets = configsArray.filter(v => !v.targetColumn);
-    if (missingTargets.length > 0) {
-      alert(`Please select target columns for: ${missingTargets.map(v => v.filename).join(', ')}`);
-      return;
-    }
-
+  // ==========================================================================
+  // EXTRACTED EXECUTION LOGIC: Allows us to pass fresh AI state or current React state
+  // ==========================================================================
+  const executeIntegration = async (configsArray) => {
     setIsLoading(true);
     const startTime = performance.now();
     try {
@@ -311,16 +286,127 @@ const IntegrationNode = memo(({ id, data }) => {
     } finally {
       setIsLoading(false);
     }
-  }, [
-    id,
-    variableConfigs,
-    data.connectedZoneFilename,
-    data.onIntegrationComplete,
-    resolution,
-    zoningMapping,
-    zoningAggregation,
-    outputMode
-  ]);
+  };
+
+  // ==========================================================================
+  // ACTIONS
+  // ==========================================================================
+
+  // STANDARD RUN HANDLER (Uses current React State)
+  const handleRun = useCallback(async (e) => {
+    e.stopPropagation();
+    
+    // UNIFIED VARIABLE CARDS: Always use multivariate pipeline (even for 1 variable)
+    const configsArray = Object.values(variableConfigs);
+    
+    if (configsArray.length === 0) {
+      alert("Please connect at least one dataset to the Integration Engine.");
+      return;
+    }
+    
+    // Validate all variables have target columns
+    const missingTargets = configsArray.filter(v => !v.targetColumn);
+    if (missingTargets.length > 0) {
+      alert(`Please select target columns for: ${missingTargets.map(v => v.filename).join(', ')}`);
+      return;
+    }
+
+    await executeIntegration(configsArray);
+  }, [variableConfigs, resolution, zoningEnabled, outputMode, data]);
+
+  // AI HANDLER (Fetches AI -> Updates React State -> Immediately Executes with fresh config)
+  const handleAskAI = useCallback(async (e) => {
+    e.stopPropagation();
+
+    const configsArray = Object.values(variableConfigs);
+    if (configsArray.length === 0) {
+      alert("Please connect at least one dataset to the Integration Engine.");
+      return;
+    }
+    if (!zoningEnabled || !data.connectedZoneFilename) {
+      alert("Connect a zoning dataset first. The Copilot only recommends zoning operators.");
+      return;
+    }
+
+    const missingTargets = configsArray.filter(v => !v.targetColumn);
+    if (missingTargets.length > 0) {
+      alert(`Please select target columns for: ${missingTargets.map(v => v.filename).join(', ')}`);
+      return;
+    }
+
+    setCopilotState('loading');
+    try {
+      const payload = {
+        target_zoning: {
+          dataset_name: data.connectedZoneFilename,
+          geometry_type: data.connectedZoneMetadata?.geometricType || 'Polygon'
+        },
+        source_variables: configsArray.map(v => ({
+          dataset_name: v.filename,
+          column_name: v.targetColumn,
+          original_geometry: v.metadata?.geometricType || 'Polygon'
+        }))
+      };
+
+      const response = await fetch('http://localhost:8000/api/v1/copilot/recommend-operators', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err?.detail || 'Copilot request failed');
+      }
+
+      const recommendations = await response.json();
+      const recByKey = new Map(
+        (Array.isArray(recommendations) ? recommendations : []).map(rec => [
+          `${rec.dataset_name}::${rec.column_name}`,
+          rec
+        ])
+      );
+
+      // 1. Build the NEW configuration object
+      const nextConfigs = { ...variableConfigs };
+      Object.keys(nextConfigs).forEach(varId => {
+        const cfg = nextConfigs[varId];
+        const datasetStem = (cfg.filename || '').replace(/\.geojson$/i, '');
+        const rec = recByKey.get(`${datasetStem}::${cfg.targetColumn}`) || recByKey.get(`${cfg.filename}::${cfg.targetColumn}`);
+        if (rec) {
+          nextConfigs[varId] = {
+            ...cfg,
+            zoningMapping: rec.zoningMapping || cfg.zoningMapping,
+            zoningAggregation: rec.zoningAggregation || cfg.zoningAggregation,
+            // Sync Grid Aggregation automatically based on AI's Zoning choice
+            aggregation: ZONE_TO_GRID_AGGREGATION[rec.zoningAggregation] || cfg.aggregation
+          };
+        }
+      });
+
+      // 2. Update Reasoning State
+      const reasoningMap = {};
+      (Array.isArray(recommendations) ? recommendations : []).forEach(rec => {
+        const keyA = `${rec.dataset_name}::${rec.column_name}`;
+        const keyB = `${rec.dataset_name}.geojson::${rec.column_name}`;
+        reasoningMap[keyA] = rec.reasoning || '';
+        reasoningMap[keyB] = rec.reasoning || '';
+      });
+      
+      // 3. Update React State so UI dropdowns match what just ran
+      setVariableConfigs(nextConfigs);
+      setCopilotReasoning(reasoningMap);
+      setCopilotState('success');
+
+      // 4. AUTO-RUN THE PIPELINE with the newly generated configs
+      await executeIntegration(Object.values(nextConfigs));
+
+    } catch (error) {
+      console.error('Copilot Error:', error);
+      setCopilotState('error');
+      alert(`Copilot error: ${error.message}`);
+    }
+  }, [variableConfigs, zoningEnabled, data.connectedZoneFilename, data.connectedZoneMetadata, resolution, outputMode]);
 
   // Shared input styling to keep things consistent
   const inputStyle = {
@@ -344,6 +430,8 @@ const IntegrationNode = memo(({ id, data }) => {
     fontWeight: '600',
     marginBottom: '8px'
   };
+
+  const isCopilotLoading = copilotState === 'loading';
 
   return (
     <div style={{
@@ -508,7 +596,19 @@ const IntegrationNode = memo(({ id, data }) => {
                               value={config.zoningMapping || 'AreaWeightedZoning'}
                               onChange={e => updateVariableConfig(dataset.id, { zoningMapping: e.target.value })}
                               className="nodrag"
-                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px', borderColor: '#6ee7b7'}}
+                              style={{
+                                ...inputStyle,
+                                cursor: 'pointer',
+                                fontSize: '10px',
+                                height: '22px',
+                                borderColor: '#6ee7b7',
+                                opacity: isCopilotLoading ? 0.65 : 1,
+                                backgroundImage: isCopilotLoading ? 'linear-gradient(90deg, #ecfdf5 0%, #d1fae5 50%, #ecfdf5 100%)' : undefined,
+                                backgroundSize: isCopilotLoading ? '200% 100%' : undefined,
+                                animation: isCopilotLoading ? 'copilotShimmer 1.2s linear infinite' : undefined
+                              }}
+                              title={copilotReasoning[`${dataset.filename}::${config.targetColumn}`] || ''}
+                              disabled={isCopilotLoading}
                             >
                               {ZONING_MAPPING_OPS.map(op => <option key={op} value={op}>{op}</option>)}
                             </select>
@@ -528,46 +628,43 @@ const IntegrationNode = memo(({ id, data }) => {
                                 });
                               }}
                               className="nodrag"
-                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px', borderColor: '#6ee7b7'}}
+                              style={{
+                                ...inputStyle,
+                                cursor: 'pointer',
+                                fontSize: '10px',
+                                height: '22px',
+                                borderColor: '#6ee7b7',
+                                opacity: isCopilotLoading ? 0.65 : 1,
+                                backgroundImage: isCopilotLoading ? 'linear-gradient(90deg, #ecfdf5 0%, #d1fae5 50%, #ecfdf5 100%)' : undefined,
+                                backgroundSize: isCopilotLoading ? '200% 100%' : undefined,
+                                animation: isCopilotLoading ? 'copilotShimmer 1.2s linear infinite' : undefined
+                              }}
+                              title={copilotReasoning[`${dataset.filename}::${config.targetColumn}`] || ''}
+                              disabled={isCopilotLoading}
                             >
                               {ZONING_AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
                             </select>
                           </label>
-                        </>
-                      )}
-                      
-                      {/* Grid-only mode: show allocation & aggregation directly */}
-                      {!zoningEnabled && (
-                        <>
-                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
-                            Allocation
-                            <select 
-                              value={config.allocation || 'ProportionalAreaWeighted'}
-                              onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
-                              className="nodrag"
-                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+
+                          {copilotReasoning[`${dataset.filename}::${config.targetColumn}`] && (
+                            <div
+                              title={copilotReasoning[`${dataset.filename}::${config.targetColumn}`]}
+                              style={{
+                                marginTop: '-2px',
+                                fontSize: '8px',
+                                color: '#0f766e',
+                                lineHeight: 1.3,
+                                background: '#ecfeff',
+                                border: '1px solid #a5f3fc',
+                                borderRadius: '4px',
+                                padding: '4px 6px'
+                              }}
                             >
-                              {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                            </select>
-                          </label>
+                              ℹ️ AI rationale available (hover)
+                            </div>
+                          )}
                           
-                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
-                            Aggregation
-                            <select 
-                              value={config.aggregation || 'SumAggregation'}
-                              onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
-                              className="nodrag"
-                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
-                            >
-                              {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                            </select>
-                          </label>
-                        </>
-                      )}
-                      
-                      {/* Advanced Grid Configuration (Progressive Disclosure) */}
-                      {zoningEnabled && (
-                        <>
+                          {/* Advanced Grid Configuration (Progressive Disclosure) */}
                           <div 
                             onClick={(e) => { e.stopPropagation(); toggleAdvancedExpand(dataset.id); }}
                             className="nodrag"
@@ -625,12 +722,43 @@ const IntegrationNode = memo(({ id, data }) => {
                           )}
                         </>
                       )}
+                      
+                      {/* Grid-only mode: show allocation & aggregation directly */}
+                      {!zoningEnabled && (
+                        <>
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                            Allocation
+                            <select 
+                              value={config.allocation || 'ProportionalAreaWeighted'}
+                              onChange={e => updateVariableConfig(dataset.id, { allocation: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                            >
+                              {ALLOCATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                          
+                          <label style={{...labelStyle, marginBottom: '4px', fontSize: '9px'}}>
+                            Aggregation
+                            <select 
+                              value={config.aggregation || 'SumAggregation'}
+                              onChange={e => updateVariableConfig(dataset.id, { aggregation: e.target.value })}
+                              className="nodrag"
+                              style={{...inputStyle, cursor: 'pointer', fontSize: '10px', height: '22px'}}
+                            >
+                              {AGGREGATION_OPS.map(op => <option key={op} value={op}>{op}</option>)}
+                            </select>
+                          </label>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
               );
             })}
             
+            {/* END: Variable Cards */}
+
             {/* Shared Resolution */}
             <label style={labelStyle}>
               H3 Resolution
@@ -661,8 +789,7 @@ const IntegrationNode = memo(({ id, data }) => {
             <span>Connect dataset(s) to the left handle to begin</span>
           </div>
         )}
-        {/* END: Variable Cards */}
-
+        
         {/* Zoning Section - Shared between both modes */}
         <div style={{
           marginTop: '4px',
@@ -744,39 +871,78 @@ const IntegrationNode = memo(({ id, data }) => {
           )}
         </div>
 
-        {/* Execute Button */}
-        <button 
-          onClick={handleRun}
-          disabled={
-            isLoading || 
-            !hasDatasets ||
-            Object.values(variableConfigs).some(v => !v.targetColumn)
-          }
-          className="nodrag"
-          style={{
-            marginTop: '8px',
-            padding: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '6px',
-            backgroundColor: (
-              isLoading || !hasDatasets || Object.values(variableConfigs).some(v => !v.targetColumn)
-            ) ? '#cbd5e1' : '#6366f1',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '4px',
-            fontSize: '11px',
-            fontWeight: '600',
-            cursor: (
-              isLoading || !hasDatasets || Object.values(variableConfigs).some(v => !v.targetColumn)
-            ) ? 'not-allowed' : 'pointer',
-            transition: 'background-color 0.2s'
-          }}
-        >
-          <Play size={12} fill="currentColor" />
-          {isLoading ? "Processing..." : "Execute Pipeline"}
-        </button>
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+          <button
+            onClick={handleAskAI}
+            disabled={
+              isLoading ||
+              isCopilotLoading ||
+              !hasDatasets ||
+              !zoningEnabled ||
+              Object.values(variableConfigs).some(v => !v.targetColumn)
+            }
+            className="nodrag"
+            style={{
+              flex: 1,
+              padding: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              backgroundColor: (
+                isLoading || isCopilotLoading || !hasDatasets || !zoningEnabled || Object.values(variableConfigs).some(v => !v.targetColumn)
+              ) ? '#cbd5e1' : (copilotState === 'success' ? '#0ea5a4' : '#8b5cf6'),
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '11px',
+              fontWeight: '600',
+              cursor: (
+                isLoading || isCopilotLoading || !hasDatasets || !zoningEnabled || Object.values(variableConfigs).some(v => !v.targetColumn)
+              ) ? 'not-allowed' : 'pointer',
+              transition: 'background-color 0.2s'
+            }}
+            title={!zoningEnabled ? 'Connect a zoning dataset to enable AI recommendations' : 'Ask AI to recommend zoning operators'}
+          >
+            {isCopilotLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            {isCopilotLoading ? 'Thinking...' : 'Ask AI'}
+          </button>
+
+          <button 
+            onClick={handleRun}
+            disabled={
+              isLoading || 
+              isCopilotLoading ||
+              !hasDatasets ||
+              Object.values(variableConfigs).some(v => !v.targetColumn)
+            }
+            className="nodrag"
+            style={{
+              flex: 1,
+              padding: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              backgroundColor: (
+                isLoading || isCopilotLoading || !hasDatasets || Object.values(variableConfigs).some(v => !v.targetColumn)
+              ) ? '#cbd5e1' : '#6366f1',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '11px',
+              fontWeight: '600',
+              cursor: (
+                isLoading || isCopilotLoading || !hasDatasets || Object.values(variableConfigs).some(v => !v.targetColumn)
+              ) ? 'not-allowed' : 'pointer',
+              transition: 'background-color 0.2s'
+            }}
+          >
+            <Play size={12} fill="currentColor" />
+            {isLoading ? "Processing..." : "Execute Pipeline"}
+          </button>
+        </div>
       </div>
 
       {/* Output Handle */}
@@ -785,6 +951,15 @@ const IntegrationNode = memo(({ id, data }) => {
         position={Position.Right} 
         style={{ background: '#3b82f6', width: '8px', height: '8px', right: '-4px', border: '2px solid white' }} 
       />
+
+      <style>{`
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes copilotShimmer {
+          0% { background-position: 0% 50%; }
+          100% { background-position: 200% 50%; }
+        }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 });

@@ -1,10 +1,31 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import geopandas as gpd
 import json
 import os
+import csv
+import io
+import re
+import asyncio
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+# Load .env automatically (supports backend/.env and repo-root/.env)
+if load_dotenv:
+    _backend_dir = Path(__file__).resolve().parent
+    _env_candidates = [_backend_dir / ".env", _backend_dir.parent / ".env"]
+    for _env_path in _env_candidates:
+        if _env_path.exists():
+            load_dotenv(dotenv_path=_env_path, override=False)
+            break
 
 # --- Imports for Formal Integration Engine ---
 from integration_engine import IntegrationPipeline, ZonedIntegrationPipeline, MultivariateIntegrationPipeline, VariableTrackConfig
@@ -158,6 +179,22 @@ class MultivariateIntegrationRequest(BaseModel):
     output_mode: str = "grid"               # "grid" | "zones" | "both"
 
 
+class CopilotTargetZoning(BaseModel):
+    dataset_name: str
+    geometry_type: Optional[str] = None
+
+
+class CopilotSourceVariable(BaseModel):
+    dataset_name: str
+    column_name: str
+    original_geometry: Optional[str] = None
+
+
+class CopilotRecommendRequest(BaseModel):
+    target_zoning: CopilotTargetZoning
+    source_variables: List[CopilotSourceVariable]
+
+
 # ==========================================
 # 3. DATASET MANAGEMENT ENDPOINTS
 # ==========================================
@@ -293,8 +330,6 @@ async def run_operation(request: OperationRequest):
 # ==========================================
 # 5. FORMAL INTEGRATION ENDPOINT (I = A_1 ∘ R)
 # ==========================================
-
-from pathlib import Path
 
 @app.post("/api/integrate_test")
 async def integrate_datasets(request: IntegrationRequest):
@@ -695,3 +730,367 @@ async def get_available_operators():
         "zoning_aggregation": list(ZONING_AGGREGATION_REGISTRY.keys()),
         "geometry_constraints": GEOMETRY_CONSTRAINTS
     }
+
+
+# ==========================================
+# 8. INTEGRATION COPILOT ENDPOINT
+# ==========================================
+
+COPILOT_SYSTEM_PROMPT = """
+You are an expert Spatial Data Scientist and GIS Architect. Your task is to select the
+optimal Zoning Mapping and Zoning Aggregation operators from the provided lists.
+
+Step 1: Analyze the Context & Metadata
+Review dataset_name and column_metadata.name together. If the column name is generic
+(e.g., value, count, total, metric), you MUST rely on dataset_name to determine the meaning.
+Then review num_distinct_values, distribution (mean, coverage), and sample_data.
+
+Step 2: Classify the Data Type
+- Extensive (Count/Total): high num_distinct_values, larger means, values scale with area
+- Intensive (Rate/Density): decimals/floats, keywords like rate/avg/median/density
+- Categorical/Ordinal (Index): low num_distinct_values (often 1-10), integer classes, index-like labels
+
+Step 3: Geospatial Reasoning & Operator Selection
+You are provided target_geometry and valid arrays: available_mapping_operators and available_aggregation_operators.
+- If target is Point/MultiPoint, area-weighted mapping is invalid. Choose point-safe mapping.
+- Extensive -> aggregation should preserve totals (typically Sum)
+- Intensive -> aggregation should avoid absurd accumulation (typically WeightedMean/Mean/Density)
+- Categorical/Ordinal -> use discrete grouping (typically Majority)
+
+Return ONLY a valid JSON array with one object per source variable, each containing:
+dataset_name, column_name, classification, zoningMapping, zoningAggregation, reasoning.
+Never invent operators not present in provided arrays.
+""".strip()
+
+
+def _normalize_dataset_stem(dataset_name: str) -> str:
+    base = os.path.basename(dataset_name or "")
+    if base.endswith(".geojson"):
+        return base[:-8]
+    return base
+
+
+def _metadata_path_for_dataset(dataset_name: str) -> str:
+    stem = _normalize_dataset_stem(dataset_name)
+    return os.path.join(DATA_DIR, "metadata", f"{stem}_metadata.json")
+
+
+def _extract_sample_values(sample_csv: Optional[str], target_column: str, max_rows: int = 20) -> List[Any]:
+    if not sample_csv:
+        return []
+
+    try:
+        reader = csv.DictReader(io.StringIO(sample_csv))
+        values: List[Any] = []
+        for row in reader:
+            if len(values) >= max_rows:
+                break
+            raw = row.get(target_column)
+            if raw is None or raw == "":
+                continue
+
+            token = str(raw).strip()
+            if re.fullmatch(r"-?\d+", token):
+                values.append(int(token))
+            elif re.fullmatch(r"-?\d*\.\d+", token):
+                values.append(float(token))
+            else:
+                values.append(token)
+        return values
+    except Exception:
+        return []
+
+
+def _classify_variable(dataset_name: str, column_name: str, column_meta: Dict[str, Any], sample_data: List[Any]) -> str:
+    label = f"{dataset_name} {column_name}".lower()
+    distinct = column_meta.get("num_distinct_values")
+    structural = str(column_meta.get("structural_type", "")).lower()
+
+    numeric_samples = [v for v in sample_data if isinstance(v, (int, float))]
+    has_decimal = any(isinstance(v, float) and not float(v).is_integer() for v in numeric_samples)
+
+    if any(k in label for k in ["index", "rank", "score", "class", "category", "vulnerability"]):
+        return "Ordinal Index"
+    if distinct is not None and isinstance(distinct, (int, float)) and distinct <= 10 and "integer" in structural:
+        return "Ordinal Index"
+    if has_decimal or any(k in label for k in ["rate", "ratio", "density", "avg", "average", "mean", "median", "%", "percent"]):
+        return "Intensive"
+    if any(k in label for k in ["count", "total", "population", "incidents", "arrests", "collisions", "units", "volume"]):
+        return "Extensive"
+    return "Extensive"
+
+
+def _pick_mapping_operator(target_geometry: str, available_mapping_ops: List[str]) -> str:
+    g = (target_geometry or "").lower()
+    if g in ["point", "multipoint"]:
+        for candidate in ["CentroidZoning"]:
+            if candidate in available_mapping_ops:
+                return candidate
+        return available_mapping_ops[0]
+
+    for candidate in ["AreaWeightedZoning", "CentroidZoning"]:
+        if candidate in available_mapping_ops:
+            return candidate
+    return available_mapping_ops[0]
+
+
+def _pick_aggregation_operator(classification: str, available_agg_ops: List[str]) -> str:
+    if classification == "Ordinal Index":
+        for candidate in ["MajorityZoning", "MaxZoning", "MinZoning"]:
+            if candidate in available_agg_ops:
+                return candidate
+    elif classification == "Intensive":
+        for candidate in ["WeightedMeanZoning", "DensityZoning", "MeanZoning"]:
+            if candidate in available_agg_ops:
+                return candidate
+    else:
+        for candidate in ["SumZoning", "WeightedMeanZoning"]:
+            if candidate in available_agg_ops:
+                return candidate
+
+    return available_agg_ops[0]
+
+
+def _heuristic_recommendations(llm_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    target_geometry = llm_payload.get("zoning_target", {}).get("geometry_type") or "Polygon"
+    mapping_ops = llm_payload.get("available_mapping_operators", [])
+    agg_ops = llm_payload.get("available_aggregation_operators", [])
+
+    results: List[Dict[str, Any]] = []
+    for var in llm_payload.get("source_variables", []):
+        dataset_name = var.get("dataset_name")
+        column_meta = var.get("column_metadata", {})
+        column_name = column_meta.get("name")
+        sample_data = var.get("sample_data", [])
+        classification = _classify_variable(dataset_name, column_name, column_meta, sample_data)
+        zoning_mapping = _pick_mapping_operator(target_geometry, mapping_ops)
+        zoning_aggregation = _pick_aggregation_operator(classification, agg_ops)
+
+        reasoning = (
+            f"Classified as {classification} using column name, distinct values, and sample distribution. "
+            f"Selected {zoning_mapping} for target geometry {target_geometry} and {zoning_aggregation} for mathematically safe zoning aggregation."
+        )
+
+        results.append({
+            "dataset_name": dataset_name,
+            "column_name": column_name,
+            "classification": classification,
+            "zoningMapping": zoning_mapping,
+            "zoningAggregation": zoning_aggregation,
+            "reasoning": reasoning,
+            "engine": "heuristic"  # <--- ADD THIS
+        })
+
+    return results
+
+
+def _call_portkey_structured(llm_payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    print("\n--- STARTING PORTKEY CALL ---") # Breadcrumb 1
+    api_key = os.getenv("PORTKEY_API_KEY")
+    if not api_key:
+        print("❌ ERROR: PORTKEY_API_KEY is missing or empty! Aborting LLM call.") # Breadcrumb 2
+        return None
+    
+    print("✅ API Key found.") # Breadcrumb 3
+    # if not api_key:
+    #     return None
+
+    base_url = os.getenv("PORTKEY_BASE_URL", "https://ai-gateway.apps.cloud.rt.nyu.edu/v1")
+    model = os.getenv("PORTKEY_MODEL", "@vertexai/anthropic.claude-opus-4-6")
+
+    print(f"📡 Sending request to: {base_url} using model: {model}") # Breadcrumb 4
+
+    # schema = {
+    #     "name": "copilot_recommendations",
+    #     "strict": True,
+    #     "schema": {
+    #         "type": "array",
+    #         "items": {
+    #             "type": "object",
+    #             "additionalProperties": False,
+    #             "required": [
+    #                 "dataset_name",
+    #                 "column_name",
+    #                 "classification",
+    #                 "zoningMapping",
+    #                 "zoningAggregation",
+    #                 "reasoning"
+    #             ],
+    #             "properties": {
+    #                 "dataset_name": {"type": "string"},
+    #                 "column_name": {"type": "string"},
+    #                 "classification": {"type": "string"},
+    #                 "zoningMapping": {"type": "string"},
+    #                 "zoningAggregation": {"type": "string"},
+    #                 "reasoning": {"type": "string"}
+    #             }
+    #         }
+    #     }
+    # }
+
+    body = {
+        "model": model,
+        "temperature": 0.1,
+        "max_tokens": int(os.getenv("PORTKEY_MAX_TOKENS", "1024")),
+        "messages": [
+            {"role": "system", "content": COPILOT_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(llm_payload)}
+        ]
+        # ,
+        # "response_format": {
+        #     "type": "json_schema",
+        #     "json_schema": schema
+        # }
+    }
+
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            content = payload["choices"][0]["message"]["content"]
+
+            # --- NEW: Safely strip markdown formatting if Claude wraps the JSON ---
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif content.startswith("```"):
+                content = content.split("```")[1].split("```")[0].strip()
+            # -------------------------------------------------------------------
+
+            parsed = json.loads(content)
+            # if isinstance(parsed, list):
+            #     return parsed
+            # return None
+            if isinstance(parsed, list):
+                print("✅ LLM Call Successful!")
+                # Optional: Inject the engine flag here so you know the LLM worked
+                for item in parsed:
+                    item["engine"] = "llm"
+                return parsed
+            return None
+    except urllib.error.HTTPError as e:
+        # This will catch 400, 401, 403, 500 errors and read the actual message from Portkey
+        error_body = e.read().decode("utf-8")
+        print(f"\n❌ PORTKEY HTTP ERROR {e.code}:")
+        print(error_body, "\n")
+        return None
+    except Exception as e:
+        # This catches timeouts, JSON decoding errors, or network drops
+        print(f"\n❌ PORTKEY INTERNAL ERROR: {str(e)}\n")
+        return None
+    # except (urllib.error.HTTPError, urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError):
+    #     return None
+
+
+@app.post("/api/v1/copilot/recommend-operators")
+async def recommend_operators(request: CopilotRecommendRequest):
+    """
+    Recommends zoning operators (zoningMapping + zoningAggregation) per source variable.
+    Grid operators remain frontend deterministic based on geometry.
+    """
+    if not request.source_variables:
+        raise HTTPException(status_code=400, detail="source_variables cannot be empty")
+
+    available_mapping_operators = list(ZONING_MAPPING_REGISTRY.keys())
+    available_aggregation_operators = list(ZONING_AGGREGATION_REGISTRY.keys())
+
+    source_payload: List[Dict[str, Any]] = []
+    for source_var in request.source_variables:
+        metadata_path = _metadata_path_for_dataset(source_var.dataset_name)
+        if not os.path.exists(metadata_path):
+            raise HTTPException(status_code=404, detail=f"Metadata not found for dataset: {source_var.dataset_name}")
+
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        column_meta = next(
+            (c for c in metadata.get("columns", []) if c.get("name") == source_var.column_name),
+            None
+        )
+        if not column_meta:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{source_var.column_name}' not found in metadata for dataset '{source_var.dataset_name}'"
+            )
+
+        sample_values = _extract_sample_values(metadata.get("sample"), source_var.column_name, max_rows=20)
+        source_payload.append({
+            "dataset_name": _normalize_dataset_stem(source_var.dataset_name),
+            "original_geometry": source_var.original_geometry or metadata.get("geometricType"),
+            "column_metadata": {
+                "name": column_meta.get("name"),
+                "structural_type": column_meta.get("structural_type"),
+                "num_distinct_values": column_meta.get("num_distinct_values"),
+                "mean": column_meta.get("mean"),
+                "stddev": column_meta.get("stddev"),
+                "coverage": column_meta.get("coverage", [])
+            },
+            "sample_data": sample_values
+        })
+
+    llm_payload = {
+        "task": "Determine zoning spatial mapping and aggregation operators based on statistical metadata.",
+        "zoning_target": {
+            "dataset_name": _normalize_dataset_stem(request.target_zoning.dataset_name),
+            "geometry_type": request.target_zoning.geometry_type or "Polygon"
+        },
+        "available_mapping_operators": available_mapping_operators,
+        "available_aggregation_operators": available_aggregation_operators,
+        "source_variables": source_payload
+    }
+
+    used_engine = "llm"
+    llm_result = await asyncio.to_thread(_call_portkey_structured, llm_payload)
+    if not llm_result:
+        llm_result = _heuristic_recommendations(llm_payload)
+        used_engine = "heuristic" # Update flag if we fell back
+
+    # Enforce available operators and request alignment
+    requested_pairs = {
+        (_normalize_dataset_stem(s.dataset_name), s.column_name): s
+        for s in request.source_variables
+    }
+    normalized_response: List[Dict[str, Any]] = []
+
+    for rec in llm_result:
+        dataset_name = _normalize_dataset_stem(str(rec.get("dataset_name", "")))
+        column_name = str(rec.get("column_name", ""))
+        if (dataset_name, column_name) not in requested_pairs:
+            continue
+
+        classification = str(rec.get("classification", "Extensive"))
+        zoning_mapping = str(rec.get("zoningMapping", ""))
+        zoning_aggregation = str(rec.get("zoningAggregation", ""))
+        reasoning = str(rec.get("reasoning", ""))
+
+        if zoning_mapping not in available_mapping_operators:
+            zoning_mapping = _pick_mapping_operator(
+                llm_payload["zoning_target"]["geometry_type"],
+                available_mapping_operators
+            )
+        if zoning_aggregation not in available_aggregation_operators:
+            zoning_aggregation = _pick_aggregation_operator(classification, available_aggregation_operators)
+
+        normalized_response.append({
+            "dataset_name": dataset_name,
+            "column_name": column_name,
+            "classification": classification,
+            "zoningMapping": zoning_mapping,
+            "zoningAggregation": zoning_aggregation,
+            "reasoning": reasoning or "Recommended using metadata statistics and geometry-aware zoning constraints.",
+            "engine": rec.get("engine", used_engine) # <--- ADD THIS
+        })
+
+    if not normalized_response:
+        normalized_response = _heuristic_recommendations(llm_payload)
+
+    return normalized_response
