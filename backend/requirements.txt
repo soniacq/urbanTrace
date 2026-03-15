@@ -1,0 +1,6 @@
+h3
+geopandas
+fastapi
+uvicorn
+portkey-ai
+python-dotenv

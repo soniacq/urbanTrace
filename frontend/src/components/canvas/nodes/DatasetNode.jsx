@@ -1,21 +1,27 @@
 // frontend/src/components/DatasetNode.jsx
-import React, { memo, useState } from 'react';
+import React, { memo, useMemo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Database, Layers, Palette, Info } from 'lucide-react'; // Added Info icon
 import VectorPreviewDeckGL from '../../visualization/VectorPreviewDeckGL'; // Up 2 levels
 
-const DatasetNode = memo(({ data }) => {
+const DatasetNode = memo(({ id, data }) => {
   const meta = data.metadata || {};
   const columns = meta.columns || [];
   const name = meta.name || data.name || 'Untitled';
   const filename = data.filename || name + '.geojson';
-  
-  const [selectedCol, setSelectedCol] = useState("");
 
-  const numericColumns = columns.filter(c => 
+  const numericColumns = useMemo(() => columns.filter(c => 
     ['Integer', 'Float', 'http://schema.org/Integer', 'http://schema.org/Float'].includes(c.structural_type) 
     || (c.mean !== undefined)
-  );
+  ), [columns]);
+
+  const selectedCol = typeof data.colorBy === 'string' ? data.colorBy : '';
+
+  const handleSelectColorBy = (value) => {
+    if (typeof data.onColorByChange === 'function') {
+      data.onColorByChange(id, value);
+    }
+  };
 
   return (
     <div style={{
@@ -97,7 +103,7 @@ const DatasetNode = memo(({ data }) => {
             </label>
             <select 
                 value={selectedCol} 
-                onChange={(e) => setSelectedCol(e.target.value)}
+                onChange={(e) => handleSelectColorBy(e.target.value)}
                 className="nodrag" 
                 style={{
                     flexGrow: 1, 
